@@ -1,7 +1,7 @@
 import { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 import mssql from "npm:mssql";
 import { corsHeaders } from '../utils/cors.ts';
-import { getSupabaseAdmin } from '../utils/supabase.ts';
+import { getSupabaseAdmin, getUserIdFromRequest } from '../utils/supabase.ts';
 import { fetchPostgresMetadata, fetchMssqlMetadata, fetchMysqlMetadata, generateMockMetadata } from '../utils/metadata.ts';
 
 export async function handleGetMetadata(req: Request, connectionId: string): Promise<Response> {
@@ -53,22 +53,19 @@ export async function handleTestConnection(req: Request): Promise<Response> {
 
     // If agentId is provided, create a job for the agent
     if (agentId) {
+        const createdBy = await getUserIdFromRequest(req);
+        if (!createdBy) {
+            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+                status: 401,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+        }
+
         console.log(`Creating test_connection job for agent ${agentId}`);
         const supabase = getSupabaseAdmin();
         const jobId = crypto.randomUUID();
 
-        const { error: jobError } = await supabase.from('agent_job_queue').insert({
-            id: jobId,
-            // project_id: body.projectId, // Assuming projectId is passed or we can fetch it via agent? 
-            // We need project_id for the agent to pick it up? 
-            // Ah, agent picks up based on project_id match.
-            // We need to fetch agent's project_id or pass it.
-            // Let's assume we can query agent to get project_id.
-            // Let's assume we can query agent to get project_id.
-            // Let's assume we can query agent to get project_id.
-        });
-
-        // Wait, fetching agent project_id is better.
+        // Fetch the agent's project_id so the agent can pick it up.
         const { data: agent, error: agentError } = await supabase.from('self_hosted_agents').select('project_id').eq('id', agentId).single();
         if (agentError || !agent) {
             return new Response(JSON.stringify({ error: 'Agent not found' }), { status: 404, headers: corsHeaders });
@@ -77,8 +74,13 @@ export async function handleTestConnection(req: Request): Promise<Response> {
         const { error: insertError } = await supabase.from('agent_job_queue').insert({
             id: jobId,
             project_id: agent.project_id,
+            created_by: createdBy,
+            agent_id: agentId,
             job_type: 'test_connection',
             status: 'pending',
+            base_url: body.base_url ?? body.baseUrl ?? 'N/A',
+            steps: [],
+            run_id: `CONNTEST-${jobId}`,
             payload: { connection: body }
         });
 

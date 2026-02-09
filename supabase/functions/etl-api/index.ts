@@ -1,5 +1,5 @@
 import { corsHeaders } from './utils/cors.ts';
-import { getSupabaseAdmin } from './utils/supabase.ts';
+import { getSupabaseAdmin, getUserIdFromRequest } from './utils/supabase.ts';
 import { handleJobPoll, handleJobStart, handleJobResult, handleArtifactUpload, handleGetJob } from './handlers/jobs.ts';
 import {
     handleGetMetadata,
@@ -29,12 +29,24 @@ Deno.serve(async (req) => {
             console.log('Creating ETL comparison job:', jobId);
 
             try {
+                const createdBy = await getUserIdFromRequest(req);
+                if (!createdBy) {
+                    return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
+                        status: 401,
+                        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+                    });
+                }
+
                 // Create job in queue for agent to pick up
                 const { error: jobError } = await supabase.from('agent_job_queue').insert({
                     id: jobId,
                     project_id: body.projectId,
+                    created_by: createdBy,
                     job_type: 'etl_comparison',
                     status: 'pending',
+                    base_url: body.base_url ?? body.baseUrl ?? 'N/A',
+                    steps: [],
+                    run_id: `ETLCOMP-${jobId}`,
                     payload: {
                         compareId,
                         sourceConnection: body.sourceConnection,

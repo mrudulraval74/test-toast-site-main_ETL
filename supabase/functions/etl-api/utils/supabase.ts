@@ -8,6 +8,23 @@ export function getSupabaseAdmin() {
     );
 }
 
+export async function getUserIdFromRequest(req: Request): Promise<string | null> {
+    const authorization = req.headers.get('Authorization');
+    if (!authorization) return null;
+
+    const jwt = authorization.replace(/^Bearer\s+/i, '').trim();
+    if (!jwt) return null;
+
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase.auth.getUser(jwt);
+    if (error) {
+        console.error('[Auth] Failed to get user from JWT:', error);
+        return null;
+    }
+
+    return data.user?.id ?? null;
+}
+
 // Validate agent API key and return agent details
 export async function validateAgent(apiKey: string | null): Promise<{ valid: boolean; agent?: any; error?: string }> {
     if (!apiKey) {
