@@ -17,6 +17,7 @@ import { isAgentOnline } from "@/utils/agentUtils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { useParams } from "react-router-dom";
 import {
     ResizableHandle,
     ResizablePanel,
@@ -194,6 +195,7 @@ async function matchToRealSchema(analysis: MappingAnalysis, sourceSchema: any, t
 
 export default function AIComparison() {
     const { toast } = useToast();
+    const { projectId } = useParams<{ projectId?: string }>();
 
     const [isDragging, setIsDragging] = useState(false);
     const [uploadedFile, setUploadedFile] = useState<{ name: string; data: any[] } | null>(null);
@@ -1432,7 +1434,21 @@ export default function AIComparison() {
                                             </SelectContent>
                                         </Select>
                                     </div>
-                                    <Button variant="outline" size="sm" onClick={() => window.open('/self-hosted-agents', '_blank')}>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            if (projectId) {
+                                                window.open(`/project/${projectId}/agents`, "_blank");
+                                                return;
+                                            }
+
+                                            toast({
+                                                title: "Open Self-Hosted Agents",
+                                                description: "Open any Project and select \"Self-Hosted Agents\" from the left menu.",
+                                            });
+                                        }}
+                                    >
                                         Manage Agents
                                     </Button>
                                 </div>
