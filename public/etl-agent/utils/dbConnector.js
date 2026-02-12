@@ -3,6 +3,123 @@ const mysql = require('mysql2/promise');
 const sqlTedious = require('mssql');
 let msnodesql = null;
 
+function parseBooleanFlag(value) {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+    return undefined;
+}
+
+function parseKeyValueConnectionString(connectionString) {
+    return String(connectionString || '')
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .reduce((acc, part) => {
+            const idx = part.indexOf('=');
+            if (idx === -1) return acc;
+            const key = part.slice(0, idx).trim().toLowerCase();
+            const value = part.slice(idx + 1).trim();
+            if (key) acc[key] = value;
+            return acc;
+        }, {});
+}
+
+function parseSqlServerConnectionString(connectionString, type) {
+    const kv = parseKeyValueConnectionString(connectionString);
+    const serverValue = kv['server'] || kv['data source'] || kv['addr'] || kv['address'] || kv['network address'];
+    const database = kv['database'] || kv['initial catalog'];
+    const username = kv['user id'] || kv['uid'] || kv['user'];
+    const password = kv['password'] || kv['pwd'];
+    const trusted = parseBooleanFlag(kv['trusted_connection'] ?? kv['integrated security']);
+    const ssl = parseBooleanFlag(kv['encrypt']);
+
+    let host;
+    let instance;
+    let port;
+
+    if (serverValue) {
+        const trimmed = String(serverValue).trim();
+        const hostAndInstance = trimmed.split('\\');
+        host = hostAndInstance[0] ? hostAndInstance[0].trim() : undefined;
+        instance = hostAndInstance[1] ? hostAndInstance[1].trim() : undefined;
+
+        if (host && host.includes(',')) {
+            const parts = host.split(',');
+            host = parts[0] ? parts[0].trim() : undefined;
+            const parsedPort = parseInt((parts[1] || '').trim(), 10);
+            if (Number.isInteger(parsedPort) && parsedPort > 0) {
+                port = parsedPort;
+            }
+        }
+    }
+
+    const normalized = {
+        type,
+        host: host || undefined,
+        instance: instance || undefined,
+        port,
+        database: database || undefined,
+        username: username || undefined,
+        password: password || undefined,
+        ssl: ssl ?? (type === 'azuresql'),
+    };
+
+    if (type === 'azuresql') {
+        normalized.trusted = false;
+    } else {
+        normalized.trusted = trusted ?? false;
+    }
+
+    return normalized;
+}
+
+function parsePostgresConnectionString(connectionString, type) {
+    try {
+        const normalizedConnStr = String(connectionString).startsWith('postgres://')
+            ? String(connectionString).replace(/^postgres:\/\//i, 'postgresql://')
+            : String(connectionString);
+        const parsed = new URL(normalizedConnStr);
+        const parsedPort = parsed.port ? parseInt(parsed.port, 10) : undefined;
+
+        return {
+            type,
+            host: parsed.hostname || undefined,
+            port: Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 5432,
+            database: parsed.pathname ? parsed.pathname.replace(/^\//, '') || undefined : undefined,
+            username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+            password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+            schema: parsed.searchParams.get('schema') || 'public',
+            ssl: parseBooleanFlag(parsed.searchParams.get('sslmode')) !== false,
+        };
+    } catch (_error) {
+        return null;
+    }
+}
+
+function normalizeConnectionConfig(config) {
+    if (!config || !config.type) return config;
+
+    const normalized = { ...config };
+    const type = String(normalized.type).toLowerCase();
+    const connectionString = normalized.connectionString || normalized.connection_string;
+
+    if (connectionString) {
+        if (type === 'mssql' || type === 'azuresql') {
+            Object.assign(normalized, parseSqlServerConnectionString(connectionString, type));
+        } else if (type === 'postgresql' || type === 'postgres' || type === 'redshift') {
+            const parsed = parsePostgresConnectionString(connectionString, type === 'postgres' ? 'postgresql' : type);
+            if (parsed) Object.assign(normalized, parsed);
+        }
+    }
+
+    delete normalized.connectionString;
+    delete normalized.connection_string;
+    return normalized;
+}
+
 function getMsnodesqlv8Driver() {
     if (msnodesql) return msnodesql;
     msnodesql = require('msnodesqlv8');
@@ -56,7 +173,8 @@ async function executeWindowsAuthQuery({ server, instanceName, parsedPort, datab
 
 // Execute query based on database type
 async function executeQuery(config, query) {
-    if (config.type === 'postgresql') {
+    config = normalizeConnectionConfig(config);
+    if (config.type === 'postgresql' || config.type === 'postgres' || config.type === 'redshift') {
         return await executePostgreSQLQuery(config, query);
     } else if (config.type === 'mysql') {
         return await executeMySQLQuery(config, query);
@@ -225,9 +343,80 @@ async function executeMSSQLQuery(config, query) {
 
 }
 
+async function fetchPostgreSQLMetadata(config) {
+    const metadataQuery = `
+        SELECT
+            c.table_schema AS schema_name,
+            c.table_name AS table_name,
+            CASE WHEN t.table_type = 'VIEW' THEN 'view' ELSE 'table' END AS table_type,
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            COALESCE((
+                SELECT 1
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                    AND tc.table_name = kcu.table_name
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_schema = c.table_schema
+                  AND tc.table_name = c.table_name
+                  AND kcu.column_name = c.column_name
+                LIMIT 1
+            ), 0) AS is_primary
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+            ON c.table_schema = t.table_schema
+            AND c.table_name = t.table_name
+        WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')
+          AND t.table_type IN ('BASE TABLE', 'VIEW')
+        ORDER BY c.table_schema, c.table_name, c.ordinal_position
+    `;
+
+    const result = await executePostgreSQLQuery(config, metadataQuery);
+    const schemasMap = new Map();
+
+    (result.rows || []).forEach((row) => {
+        if (!schemasMap.has(row.schema_name)) {
+            schemasMap.set(row.schema_name, { name: row.schema_name, tables: new Map() });
+        }
+
+        const schema = schemasMap.get(row.schema_name);
+        if (!schema.tables.has(row.table_name)) {
+            schema.tables.set(row.table_name, {
+                name: row.table_name,
+                columns: [],
+            });
+        }
+
+        if (row.column_name) {
+            schema.tables.get(row.table_name).columns.push({
+                name: row.column_name,
+                type: row.data_type,
+                nullable: row.is_nullable === 'YES' || row.is_nullable === true,
+                isPrimaryKey: row.is_primary === 1 || row.is_primary === true,
+                tableType: row.table_type === 'view' ? 'view' : 'table',
+            });
+        }
+    });
+
+    return {
+        success: true,
+        databases: [{
+            name: config.database || 'POSTGRES_DB',
+            schemas: Array.from(schemasMap.values()).map((s) => ({
+                name: s.name,
+                tables: Array.from(s.tables.values()),
+            })),
+        }],
+    };
+}
+
 // Test database connection
 async function testConnection(config) {
     try {
+        config = normalizeConnectionConfig(config);
         await executeQuery(config, 'SELECT 1');
         return { success: true };
     } catch (error) {
@@ -241,8 +430,13 @@ async function testConnection(config) {
 
 // Fetch metadata for supported databases
 async function fetchMetadata(config) {
+    config = normalizeConnectionConfig(config);
+    if (config.type === 'postgresql' || config.type === 'postgres' || config.type === 'redshift') {
+        return await fetchPostgreSQLMetadata(config);
+    }
+
     if (config.type !== 'mssql' && config.type !== 'azuresql') {
-        throw new Error(`Metadata fetch is currently supported only for SQL Server. Received: ${config.type}`);
+        throw new Error(`Metadata fetch is currently supported for SQL Server and PostgreSQL. Received: ${config.type}`);
     }
 
     const query = `

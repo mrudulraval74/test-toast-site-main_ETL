@@ -1682,6 +1682,8 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="mssql">MS SQL Server</SelectItem>
+                    <SelectItem value="azuresql">Azure SQL</SelectItem>
+                    <SelectItem value="postgresql">PostgreSQL</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1705,13 +1707,30 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                       <HelpTooltip content="A descriptive name to identify this connection" />
                     </div>
                     <Input
-                      value={dbType === 'mssql' ? mssqlData.name : mysqlData.name}
+                      value={
+                        dbType === 'mssql' ? mssqlData.name :
+                          dbType === 'azuresql' ? azureSqlData.name :
+                            dbType === 'postgresql' ? postgresData.name :
+                              dbType === 'mysql' ? mysqlData.name :
+                                dbType === 'mariadb' ? mariadbData.name :
+                                  dbType === 'oracle' ? oracleData.name :
+                                    dbType === 'databricks' ? databricksData.name :
+                                      dbType === 'snowflake' ? snowflakeData.name :
+                                        dbType === 'redshift' ? redshiftData.name :
+                                          dbType === 'sqlite' ? sqliteData.name : ''
+                      }
                       onChange={(e) => {
-                        if (dbType === 'mssql') {
-                          setMssqlData({ ...mssqlData, name: e.target.value });
-                        } else {
-                          setMysqlData({ ...mysqlData, name: e.target.value });
-                        }
+                        const name = e.target.value;
+                        if (dbType === 'mssql') setMssqlData({ ...mssqlData, name });
+                        else if (dbType === 'azuresql') setAzureSqlData({ ...azureSqlData, name });
+                        else if (dbType === 'postgresql') setPostgresData({ ...postgresData, name });
+                        else if (dbType === 'mysql') setMysqlData({ ...mysqlData, name });
+                        else if (dbType === 'mariadb') setMariadbData({ ...mariadbData, name });
+                        else if (dbType === 'oracle') setOracleData({ ...oracleData, name });
+                        else if (dbType === 'databricks') setDatabricksData({ ...databricksData, name });
+                        else if (dbType === 'snowflake') setSnowflakeData({ ...snowflakeData, name });
+                        else if (dbType === 'redshift') setRedshiftData({ ...redshiftData, name });
+                        else if (dbType === 'sqlite') setSqliteData({ ...sqliteData, name });
                       }}
                       placeholder="My Connection"
                     />
@@ -1727,9 +1746,89 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                       placeholder={
                         dbType === 'mssql'
                           ? 'Server=localhost;Database=mydb;User Id=sa;Password=...'
-                          : 'mysql://user:password@localhost:3306/database'
+                          : dbType === 'postgresql'
+                            ? 'postgresql://user:password@localhost:5432/database'
+                            : 'mysql://user:password@localhost:3306/database'
                       }
                     />
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleTestConnection}
+                      disabled={testing}
+                      variant="outline"
+                    >
+                      {testing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : testStatus === 'success' ? (
+                        <CheckCircle2 className="h-4 w-4 mr-2 text-green-500" />
+                      ) : (
+                        <TestTube className="h-4 w-4 mr-2" />
+                      )}
+                      Test Connection
+                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            onClick={handleSaveConnection}
+                            disabled={!testSuccess || saving}
+                          >
+                            {saving ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Database className="h-4 w-4 mr-2" />
+                            )}
+                            {editingConnectionId ? 'Update Connection' : 'Save Connection'}
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      {!testSuccess && (
+                        <TooltipContent>
+                          <p>Test the connection first before saving</p>
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>
+                          <Button
+                            onClick={() => {
+                              if (editingConnectionId) {
+                                handleFetchDatabases(editingConnectionId);
+                              }
+                            }}
+                            disabled={!editingConnectionId || loadingDatabases}
+                            variant="outline"
+                          >
+                            {loadingDatabases ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Database className="h-4 w-4 mr-2" />
+                            )}
+                            Fetch Databases
+                          </Button>
+                        </span>
+                      </TooltipTrigger>
+                      {!editingConnectionId && (
+                        <TooltipContent>
+                          <p>Save the connection first to fetch databases</p>
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                    <Button
+                      onClick={() => {
+                        setShowNewForm(false);
+                        setEditingConnectionId(null);
+                        setDatabaseTree([]);
+                        setConnectionId(null);
+                        resetAllForms();
+                      }}
+                      variant="outline"
+                    >
+                      Close
+                    </Button>
                   </div>
                 </div>
               ) : (

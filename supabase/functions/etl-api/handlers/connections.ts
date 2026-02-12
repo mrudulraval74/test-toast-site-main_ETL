@@ -4,6 +4,124 @@ import { corsHeaders } from '../utils/cors.ts';
 import { getSupabaseAdmin, getUserIdFromRequest } from '../utils/supabase.ts';
 import { fetchPostgresMetadata, fetchMssqlMetadata, fetchMysqlMetadata, generateMockMetadata } from '../utils/metadata.ts';
 
+function parseBooleanFlag(value: unknown): boolean | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+    return undefined;
+}
+
+function parseKeyValueConnectionString(connectionString: string): Record<string, string> {
+    return connectionString
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .reduce((acc, part) => {
+            const idx = part.indexOf('=');
+            if (idx === -1) return acc;
+            const key = part.slice(0, idx).trim().toLowerCase();
+            const value = part.slice(idx + 1).trim();
+            if (key) acc[key] = value;
+            return acc;
+        }, {} as Record<string, string>);
+}
+
+function parseSqlServerConnectionString(connectionString: string, type: string) {
+    const kv = parseKeyValueConnectionString(connectionString);
+    const serverValue = kv['server'] || kv['data source'] || kv['addr'] || kv['address'] || kv['network address'];
+    const database = kv['database'] || kv['initial catalog'];
+    const username = kv['user id'] || kv['uid'] || kv['user'];
+    const password = kv['password'] || kv['pwd'];
+    const trusted = parseBooleanFlag(kv['trusted_connection'] ?? kv['integrated security']);
+    const ssl = parseBooleanFlag(kv['encrypt']);
+
+    let host: string | undefined = undefined;
+    let instance: string | undefined = undefined;
+    let port: number | undefined = undefined;
+
+    if (serverValue) {
+        const trimmed = String(serverValue).trim();
+        const hostAndInstance = trimmed.split('\\');
+        host = hostAndInstance[0]?.trim() || undefined;
+        instance = hostAndInstance[1]?.trim() || undefined;
+
+        if (host && host.includes(',')) {
+            const [hostPart, portPart] = host.split(',');
+            host = hostPart?.trim() || undefined;
+            const parsedPort = parseInt((portPart || '').trim(), 10);
+            if (Number.isInteger(parsedPort) && parsedPort > 0) {
+                port = parsedPort;
+            }
+        }
+    }
+
+    const normalized: any = {
+        type,
+        host,
+        instance,
+        port,
+        database: database || undefined,
+        username: username || undefined,
+        password: password || undefined,
+        ssl: ssl ?? (type === 'azuresql'),
+    };
+
+    if (type === 'azuresql') {
+        normalized.trusted = false;
+    } else {
+        normalized.trusted = trusted ?? false;
+    }
+
+    return normalized;
+}
+
+function parsePostgresConnectionString(connectionString: string, type: string) {
+    try {
+        const normalizedConnStr = connectionString.startsWith('postgres://')
+            ? connectionString.replace(/^postgres:\/\//i, 'postgresql://')
+            : connectionString;
+        const parsed = new URL(normalizedConnStr);
+        const parsedPort = parsed.port ? parseInt(parsed.port, 10) : undefined;
+
+        return {
+            type,
+            host: parsed.hostname || undefined,
+            port: Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 5432,
+            database: parsed.pathname ? parsed.pathname.replace(/^\//, '') || undefined : undefined,
+            username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+            password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+            schema: parsed.searchParams.get('schema') || 'public',
+            ssl: parseBooleanFlag(parsed.searchParams.get('sslmode')) !== false,
+        };
+    } catch (_error) {
+        return null;
+    }
+}
+
+function normalizeConnectionPayload(payload: any) {
+    if (!payload || !payload.type) return payload;
+
+    const normalized = { ...payload };
+    const type = String(normalized.type).toLowerCase();
+    const connectionString = normalized.connectionString || normalized.connection_string;
+
+    if (connectionString && typeof connectionString === 'string') {
+        if (type === 'mssql' || type === 'azuresql') {
+            Object.assign(normalized, parseSqlServerConnectionString(connectionString, type));
+        } else if (type === 'postgresql' || type === 'redshift' || type === 'postgres') {
+            const parsed = parsePostgresConnectionString(connectionString, type === 'postgres' ? 'postgresql' : type);
+            if (parsed) Object.assign(normalized, parsed);
+        }
+    }
+
+    delete normalized.connectionString;
+    delete normalized.connection_string;
+
+    return normalizeSqlServerConnectionPayload(normalized);
+}
+
 function normalizeSqlServerConnectionPayload(payload: any) {
     if (!payload || (payload.type !== 'mssql' && payload.type !== 'azuresql')) {
         return payload;
@@ -38,7 +156,8 @@ function normalizeSqlServerConnectionPayload(payload: any) {
 
 export async function handleGetMetadata(req: Request, connectionId: string): Promise<Response> {
     const supabase = getSupabaseAdmin();
-    const { data: conn, error: connError } = await supabase.from('connections').select('*').eq('id', connectionId).single();
+    const { data: rawConn, error: connError } = await supabase.from('connections').select('*').eq('id', connectionId).single();
+    const conn = normalizeConnectionPayload(rawConn);
     if (connError || !conn) {
         console.error('Connection not found:', connError);
         throw new Error('Connection not found');
@@ -143,7 +262,7 @@ export async function handleGetMetadata(req: Request, connectionId: string): Pro
 
 export async function handleTestConnection(req: Request): Promise<Response> {
     const rawBody = await req.json();
-    const body = normalizeSqlServerConnectionPayload(rawBody);
+    const body = normalizeConnectionPayload(rawBody);
     const { type, host, username, database, trusted, filePath, agentId } = body;
 
     console.log(`Connection test request for ${type}:`, body);
@@ -280,7 +399,7 @@ export async function handleConnectionsList(req: Request): Promise<Response> {
 export async function handleConnectionSave(req: Request): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
-    const body = normalizeSqlServerConnectionPayload(rawBody);
+    const body = normalizeConnectionPayload(rawBody);
     if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
         // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
         body.port = 1433;
@@ -294,7 +413,7 @@ export async function handleConnectionSave(req: Request): Promise<Response> {
 export async function handleConnectionUpdate(req: Request, connectionId: string): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
-    const body = normalizeSqlServerConnectionPayload(rawBody);
+    const body = normalizeConnectionPayload(rawBody);
     if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
         // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
         body.port = 1433;
@@ -320,7 +439,8 @@ export async function handleQueryPreview(req: Request): Promise<Response> {
     const { connectionId, sql, limit = 100 } = body;
     const supabase = getSupabaseAdmin();
 
-    const { data: conn, error: connError } = await supabase.from('connections').select('*').eq('id', connectionId).single();
+    const { data: rawConn, error: connError } = await supabase.from('connections').select('*').eq('id', connectionId).single();
+    const conn = normalizeConnectionPayload(rawConn);
     if (connError || !conn) {
         return new Response(JSON.stringify({ error: 'Connection not found' }), { status: 404, headers: corsHeaders });
     }

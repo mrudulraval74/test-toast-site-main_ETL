@@ -8,7 +8,7 @@ export const helpContent = {
     connections: {
         databaseType: {
             title: "Database Type",
-            content: "Select the type of database you're connecting to. Currently supports MS SQL Server and MySQL."
+            content: "Select the type of database you're connecting to. ETL workflow supports MS SQL Server and PostgreSQL."
         },
         useConnectionString: {
             title: "Use Connection String",
@@ -43,7 +43,7 @@ export const helpContent = {
             content: "A complete connection URL containing all necessary information. Format varies by database type.",
             examples: {
                 mssql: "Server=localhost;Database=mydb;User Id=sa;Password=...",
-                mysql: "mysql://user:password@localhost:3306/database"
+                postgresql: "postgresql://user:password@localhost:5432/database"
             }
         }
     },
