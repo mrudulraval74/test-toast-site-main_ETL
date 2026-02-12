@@ -98,39 +98,39 @@ export function UploadValidationStep({
     };
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
-            <div>
-                <h2 className="text-2xl font-bold">Upload & Validate Structure</h2>
-                <p className="text-muted-foreground mt-1">
+        <div className="space-y-5">
+            <div className="space-y-1">
+                <h2 className="text-xl font-semibold sm:text-2xl">Upload & Validate Structure</h2>
+                <p className="text-sm text-muted-foreground">
                     Select connections, upload your mapping file, and validate against database structures
                 </p>
             </div>
 
             {/* Connection Selection */}
-            <Card className="border-none shadow-sm bg-background/50 backdrop-blur-sm border-2 border-primary/10">
-                <CardHeader className="pb-4 pt-4 px-6 border-b border-primary/5 bg-primary/5">
+            <Card className="border-border/80 shadow-sm">
+                <CardHeader className="border-b bg-muted/20 px-5 py-4">
                     <div className="flex items-center justify-between">
                         <div className="space-y-1">
-                            <CardTitle className="text-sm font-bold flex items-center gap-2 text-primary">
+                            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
                                 <Database className="h-4 w-4" />
                                 Connection Configuration
                             </CardTitle>
-                            <CardDescription className="text-[11px]">
+                            <CardDescription className="text-xs">
                                 Configure source and target database instances for validation
                             </CardDescription>
                         </div>
-                        <div className="flex items-center gap-3 bg-background/60 p-1.5 rounded-lg border border-primary/10 shadow-inner">
-                            <Label htmlFor="multi-source-toggle" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Multi-Source Mode</Label>
+                        <div className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5">
+                            <Label htmlFor="multi-source-toggle" className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Multi-Source Mode</Label>
                             <Checkbox
                                 id="multi-source-toggle"
                                 checked={multiSourceMode}
                                 onCheckedChange={(checked) => onMultiSourceModeChange(!!checked)}
-                                className="data-[state=checked]:bg-primary border-primary/30"
+                                className="border-border data-[state=checked]:bg-primary"
                             />
                         </div>
                     </div>
                 </CardHeader>
-                <CardContent className="p-6">
+                <CardContent className="p-5">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                         {/* Source Side */}
                         <div className="space-y-4">
@@ -147,10 +147,10 @@ export function UploadValidationStep({
 
                             <div className="space-y-3">
                                 {(multiSourceMode ? sourceConnections : [sourceConnections[0]]).map((conn, idx) => (
-                                    <div key={idx} className="group relative flex gap-3 p-3 rounded-xl border border-primary/5 bg-background shadow-sm hover:border-primary/20 transition-all duration-300 animate-in fade-in slide-in-from-top-1">
+                                    <div key={idx} className="group relative flex gap-3 rounded-lg border bg-background p-3 shadow-sm transition-colors hover:border-primary/30">
                                         <div className="flex-1 space-y-2">
                                             <div className="flex items-center justify-between">
-                                                <span className="text-[10px] font-bold text-muted-foreground">Source #{idx + 1}</span>
+                                                <span className="text-[10px] font-semibold text-muted-foreground">Source #{idx + 1}</span>
                                                 {multiSourceMode && sourceConnections.length > 1 && (
                                                     <Button
                                                         variant="ghost"
@@ -166,7 +166,7 @@ export function UploadValidationStep({
                                                 value={conn?.id || "none"}
                                                 onValueChange={(val) => handleSourceChange(idx, val)}
                                             >
-                                                <SelectTrigger className="h-9 bg-muted/30 border-none shadow-none focus:ring-1 focus:ring-primary/30 transition-all text-sm">
+                                                <SelectTrigger className="h-9 bg-background text-sm">
                                                     <SelectValue placeholder="Select Source Connection..." />
                                                 </SelectTrigger>
                                                 <SelectContent className="border-primary/10 shadow-xl">
@@ -189,7 +189,7 @@ export function UploadValidationStep({
                                     <Button
                                         variant="outline"
                                         size="sm"
-                                        className="w-full h-10 border-dashed border-primary/20 bg-primary/5 hover:bg-primary/10 hover:border-primary/40 text-xs font-bold text-primary gap-2 rounded-xl transition-all"
+                                        className="h-9 w-full gap-2 border-dashed text-xs font-semibold"
                                         onClick={handleAddSource}
                                     >
                                         <Plus className="h-3.5 w-3.5" /> Add Source System
@@ -203,14 +203,14 @@ export function UploadValidationStep({
                             <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2 block">
                                 Target Environment
                             </Label>
-                            <div className="p-3 rounded-xl border border-primary/5 bg-background shadow-sm h-fit">
+                            <div className="h-fit rounded-lg border bg-background p-3 shadow-sm">
                                 <div className="space-y-2">
                                     <span className="text-[10px] font-bold text-muted-foreground">Primary Sink</span>
                                     <Select
                                         value={targetConnection?.id || "none"}
                                         onValueChange={onTargetConnectionChange}
                                     >
-                                        <SelectTrigger className="h-9 bg-muted/30 border-none shadow-none focus:ring-1 focus:ring-primary/30 transition-all text-sm">
+                                    <SelectTrigger className="h-9 bg-background text-sm">
                                             <SelectValue placeholder="Select Target System..." />
                                         </SelectTrigger>
                                         <SelectContent className="border-primary/10 shadow-xl">
@@ -227,8 +227,8 @@ export function UploadValidationStep({
                                     </Select>
                                 </div>
                             </div>
-                            <div className="p-4 rounded-xl bg-primary/5 border border-primary/10 space-y-2">
-                                <div className="flex items-center gap-2 text-primary font-bold text-[10px] uppercase">
+                            <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
+                                <div className="flex items-center gap-2 text-[10px] font-semibold uppercase text-primary">
                                     <AlertCircle className="h-3 w-3" />
                                     Deployment Guide
                                 </div>

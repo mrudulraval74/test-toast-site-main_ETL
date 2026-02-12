@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { FileSpreadsheet, Copy } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { FileSpreadsheet, Copy, RotateCcw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useToast } from '@/hooks/use-toast';
 import { generateMappingSpecificTests } from '@/utils/mappingSpecificTestGenerator';
@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { connectionsApi, queriesApi, reportsApi, compareApi } from '@/lib/api';
 import { supabase } from "@/integrations/supabase/client";
-import { isAgentOnline } from "@/utils/agentUtils";
+import { Agent, isAgentOnline } from "@/utils/agentUtils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -39,7 +39,6 @@ import { UploadValidationStep } from './ai-comparison-workflow/UploadValidationS
 import { TestComparisonStep } from './ai-comparison-workflow/TestComparisonStep';
 import { SaveResultsStep } from './ai-comparison-workflow/SaveResultsStep';
 import { TestHistorySidebar, SaveRunDialog } from './ai-comparison/TestHistorySidebar';
-import { AlertCircle, Lock } from 'lucide-react';
 
 
 // Shared Interfaces
@@ -75,6 +74,51 @@ interface MappingAnalysis {
     mappings?: any[];
     testCases: TestCase[];
 }
+
+const normalizeSavedRuns = (rawData: any): any[] => {
+    const reports = Array.isArray(rawData)
+        ? rawData
+        : Array.isArray(rawData?.reports)
+            ? rawData.reports
+            : [];
+
+    return reports
+        .filter(Boolean)
+        .map((run: any) => {
+            const testCases = Array.isArray(run?.summary?.testCases)
+                ? run.summary.testCases
+                : Array.isArray(run?.testCases)
+                    ? run.testCases
+                    : [];
+
+            const passedTests = typeof run?.summary?.passedTests === 'number'
+                ? run.summary.passedTests
+                : testCases.filter((tc: any) => tc?.lastRunResult?.status === 'pass').length;
+
+            const failedTests = typeof run?.summary?.failedTests === 'number'
+                ? run.summary.failedTests
+                : testCases.filter((tc: any) => tc?.lastRunResult?.status === 'fail').length;
+
+            const totalTests = typeof run?.summary?.totalTests === 'number'
+                ? run.summary.totalTests
+                : testCases.length;
+
+            return {
+                ...run,
+                summary: {
+                    ...(run?.summary || {}),
+                    isTestSuite: run?.summary?.isTestSuite ?? true,
+                    fileName: run?.summary?.fileName || run?.fileName || 'Saved Run',
+                    folderName: run?.summary?.folderName || run?.folderName || 'Uncategorized',
+                    totalTests,
+                    passedTests,
+                    failedTests,
+                    testCases
+                }
+            };
+        })
+        .filter((run: any) => run?.summary?.isTestSuite);
+};
 
 // Helper Function
 function replaceTablePlaceholders(analysis: MappingAnalysis, sourceConn?: any, targetConn?: any): MappingAnalysis {
@@ -210,35 +254,48 @@ export default function AIComparison() {
     const [selectedSQL, setSelectedSQL] = useState<{ source: string; target: string; name: string } | null>(null);
 
     // Agent State
-    const [agents, setAgents] = useState<any[]>([]);
+    const [agents, setAgents] = useState<Agent[]>([]);
     const [selectedAgentId, setSelectedAgentId] = useState<string>("");
     const [loadingAgents, setLoadingAgents] = useState(false);
 
+    const fetchAgents = useCallback(async () => {
+        setLoadingAgents(true);
+        try {
+            const { data, error } = await supabase
+                .from('self_hosted_agents')
+                .select('*')
+                // .eq('agent_type', 'etl') // Removed strict filter to allow general agents
+                .order('status', { ascending: false }); // Online first
+
+            if (error) throw error;
+
+            const nextAgents = (data || []) as Agent[];
+            setAgents(nextAgents);
+
+            // Auto-select first active agent
+            const onlineAgent = nextAgents.find((agent) => isAgentOnline(agent));
+            if (onlineAgent) setSelectedAgentId(onlineAgent.id);
+        } catch (err) {
+            console.error("Failed to fetch agents", err);
+            toast({ title: "Agent Error", description: "Failed to load ETL agents", variant: "destructive" });
+        } finally {
+            setLoadingAgents(false);
+        }
+    }, [toast]);
+
+    const selectableAgents = agents.filter((agent) => isAgentOnline(agent));
+    const offlineAgents = agents.filter((agent) => !isAgentOnline(agent));
+
+    useEffect(() => {
+        if (!selectedAgentId) return;
+        const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
+        if (selectedAgent && !isAgentOnline(selectedAgent)) {
+            setSelectedAgentId("");
+        }
+    }, [agents, selectedAgentId]);
+
     // Fetch Agents on Mount
     useEffect(() => {
-        const fetchAgents = async () => {
-            setLoadingAgents(true);
-            try {
-                const { data, error } = await supabase
-                    .from('self_hosted_agents')
-                    .select('*')
-                    // .eq('agent_type', 'etl') // Removed strict filter to allow general agents
-                    .order('status', { ascending: false }); // Online first
-
-                if (error) throw error;
-                setAgents(data || []);
-
-                // Auto-select first active agent
-                const onlineAgent = data?.find(a => isAgentOnline(a));
-                if (onlineAgent) setSelectedAgentId(onlineAgent.id);
-            } catch (err) {
-                console.error("Failed to fetch agents", err);
-                toast({ title: "Agent Error", description: "Failed to load ETL agents", variant: "destructive" });
-            } finally {
-                setLoadingAgents(false);
-            }
-        };
-
         fetchAgents();
 
         // Subscribe to agent changes
@@ -252,7 +309,7 @@ export default function AIComparison() {
         return () => {
             supabase.removeChannel(channel);
         };
-    }, []);
+    }, [fetchAgents]);
 
     // Validation State
     const [isValidating, setIsValidating] = useState(false);
@@ -362,11 +419,7 @@ export default function AIComparison() {
         const loadHistory = async () => {
             try {
                 const { data } = await reportsApi.list();
-                // API returns {reports: [...], total, limit, offset}
-                if (data && (data as any).reports && Array.isArray((data as any).reports)) {
-                    const tests = (data as any).reports.filter((r: any) => r.summary?.isTestSuite);
-                    setSavedRuns(tests);
-                }
+                setSavedRuns(normalizeSavedRuns(data));
             } catch (error) {
                 console.error("Failed to load history:", error);
             }
@@ -706,18 +759,102 @@ export default function AIComparison() {
         toast({ title: "Test Case Deleted", description: "Test case removed." });
     };
 
+    const formatExecutionErrorMessage = (error: unknown, context: 'poll' | 'execution' | 'submission'): string => {
+        const raw = String(error || '').trim();
+        const normalized = raw.toLowerCase();
+
+        if (!raw) {
+            return "Execution could not be completed. Please try again.";
+        }
+
+        if (normalized.includes('not found') || normalized.includes('404')) {
+            return "Result is not available for this run. The job may have expired or the agent may be offline. Please run the test again.";
+        }
+
+        if (normalized.includes('network') || normalized.includes('failed to fetch')) {
+            return "Unable to reach the execution service. Check network connectivity and agent availability, then retry.";
+        }
+
+        if (
+            normalized.includes('syntax') ||
+            normalized.includes('incorrect syntax') ||
+            normalized.includes('sqlstate') ||
+            normalized.includes('parse error') ||
+            normalized.includes('ora-') ||
+            normalized.includes('near')
+        ) {
+            return `SQL syntax error while executing the test query. Details: ${raw}`;
+        }
+
+        if (context === 'poll') {
+            return `Unable to get execution status from the agent: ${raw}`;
+        }
+
+        if (context === 'submission') {
+            return `Test request could not be submitted: ${raw}`;
+        }
+
+        return `Execution failed: ${raw}`;
+    };
+
+    const buildActualResultMessage = (result: any, success: boolean): string => {
+        const baseMessage = String(result?.message || '').trim();
+        const summary = result?.summary || {};
+        const sourceRows = Number(summary?.sourceRowCount ?? result?.source_count ?? 0);
+        const targetRows = Number(summary?.targetRowCount ?? result?.target_count ?? 0);
+        const matchedRows = Number(summary?.matchedRows ?? 0);
+        const mismatchedRows = Number(summary?.mismatchedRows ?? 0);
+        const sourceOnlyRows = Number(summary?.sourceOnlyRows ?? 0);
+        const targetOnlyRows = Number(summary?.targetOnlyRows ?? 0);
+        const mismatches = Array.isArray(result?.mismatches)
+            ? result.mismatches
+            : Array.isArray(result?.sampleMismatches)
+                ? result.sampleMismatches
+                : [];
+        const errorText = String(result?.error || '').trim();
+
+        if (mismatchedRows > 0 || sourceOnlyRows > 0 || targetOnlyRows > 0 || mismatches.length > 0) {
+            const parts = [
+                `source=${sourceRows}`,
+                `target=${targetRows}`,
+                `matched=${matchedRows}`,
+                `mismatched=${mismatchedRows}`,
+            ];
+            if (sourceOnlyRows > 0) parts.push(`sourceOnly=${sourceOnlyRows}`);
+            if (targetOnlyRows > 0) parts.push(`targetOnly=${targetOnlyRows}`);
+            return `Comparison failed: ${parts.join(', ')}.`;
+        }
+
+        if (mismatches.length > 0) {
+            const firstMismatch = mismatches[0];
+            const keys = firstMismatch && typeof firstMismatch === 'object'
+                ? Object.keys(firstMismatch).slice(0, 3).join(', ')
+                : '';
+            return `Mismatch found: ${mismatches.length} row(s) differ between source and target.${keys ? ` Sample fields: ${keys}.` : ''}`;
+        }
+
+        if (errorText) {
+            return formatExecutionErrorMessage(errorText, 'execution');
+        }
+
+        if (baseMessage) return baseMessage;
+        return success
+            ? "Test passed successfully."
+            : "Execution completed but no detailed result was returned by the agent.";
+    };
+
     // --- Test Execution Logic (Agent-Based) ---
-    const handleRunTestCase = async (testCase: TestCase) => {
+    const handleRunTestCase = async (testCase: TestCase): Promise<'pass' | 'fail' | 'skipped'> => {
         const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
 
         if (!selectedAgentId) {
             toast({ title: "Agent Required", description: "Please select an active ETL Agent in Step 1.", variant: "destructive" });
-            return;
+            return 'skipped';
         }
 
         if (!hasSource || !targetConnection) {
             toast({ title: "Connections Missing", description: "Please select both Source and Target connections.", variant: "destructive" });
-            return;
+            return 'skipped';
         }
 
         const updateStatus = (status: TestCase['lastRunResult']) => {
@@ -757,69 +894,119 @@ export default function AIComparison() {
             console.log("Job submitted:", job);
             updateStatus({ status: 'running', message: 'Agent Processing...', timestamp: new Date() });
 
-            // 2. Poll for Completion
-            const pollInterval = setInterval(async () => {
-                const { data: statusData, error: statusError } = await compareApi.status(job.job_id || job.id);
+            const jobId = job?.jobId || job?.job_id || job?.id;
+            if (!jobId) {
+                throw new Error("Failed to resolve job ID from comparison run response.");
+            }
 
-                if (statusError) {
-                    clearInterval(pollInterval);
-                    updateStatus({ status: 'fail', message: `Poll Error: ${statusError}`, timestamp: new Date() });
-                    return;
-                }
+            return await new Promise<'pass' | 'fail'>((resolve) => {
+                let pollInterval: ReturnType<typeof setInterval> | null = null;
+                let resolved = false;
+                let notFoundPollErrors = 0;
 
-                const jobStatus = statusData?.status;
-                console.log("Job Status:", jobStatus);
-
-                if (jobStatus === 'completed') {
-                    clearInterval(pollInterval);
-                    // Fetch full results
-                    const { data: resultData } = await compareApi.results(job.job_id || job.id);
-
-                    const result = resultData?.result || {};
-                    const success = result.success || false;
-                    const message = result.message || (success ? "Test Passed" : "Test Failed");
-
+                const finalize = (status: 'pass' | 'fail', message: string, details?: any) => {
+                    if (resolved) return;
+                    resolved = true;
+                    if (pollInterval) clearInterval(pollInterval);
+                    clearTimeout(timeoutId);
                     updateStatus({
-                        status: success ? 'pass' : 'fail',
-                        message: message,
+                        status,
+                        message,
                         timestamp: new Date(),
-                        details: {
-                            sourceCount: result.source_count || 0,
-                            targetCount: result.target_count || 0,
+                        details
+                    });
+                    resolve(status);
+                };
+
+                pollInterval = setInterval(async () => {
+                    const { data: statusData, error: statusError } = await compareApi.status(jobId);
+
+                    if (statusError) {
+                        const rawErr = String(statusError || '');
+                        if (rawErr.toLowerCase().includes('not found') && notFoundPollErrors < 3) {
+                            notFoundPollErrors += 1;
+                            return;
+                        }
+                        finalize('fail', formatExecutionErrorMessage(statusError, 'poll'));
+                        return;
+                    }
+
+                    const jobStatus = statusData?.status;
+                    const resultPayload = statusData?.result || {};
+                    const errorText = statusData?.error_log || statusData?.error || resultPayload?.error;
+                    const summary = resultPayload?.summary || {};
+                    const mismatches = Array.isArray(resultPayload?.mismatches)
+                        ? resultPayload.mismatches
+                        : Array.isArray(resultPayload?.sampleMismatches)
+                            ? resultPayload.sampleMismatches
+                            : [];
+                    console.log("Job Status:", jobStatus);
+
+                    if (jobStatus === 'completed') {
+                        // Fetch full results (same endpoint alias) to ensure latest payload
+                        const { data: resultData } = await compareApi.results(jobId);
+                        const result = resultData?.result || resultPayload || {};
+                        const success = (result?.summary?.comparisonStatus || '').toLowerCase() !== 'failed';
+                        const message = buildActualResultMessage(result, success);
+
+                        const details = {
+                            sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
+                            targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
                             sourceData: result.source_data || [],
                             targetData: result.target_data || [],
                             comparisonType: testCase.category || 'general',
-                            mismatchData: result.mismatches || []
+                            mismatchData: Array.isArray(result?.mismatches)
+                                ? result.mismatches
+                                : Array.isArray(result?.sampleMismatches)
+                                    ? result.sampleMismatches
+                                    : []
+                        };
+
+                        finalize(success ? 'pass' : 'fail', message, details);
+                        toast({
+                            title: success ? "Test Passed" : "Issue Detected",
+                            description: message,
+                            variant: success ? "default" : "destructive"
+                        });
+                    } else if (jobStatus === 'failed' || jobStatus === 'error') {
+                        // Some ETL mismatches are persisted as failed with valid comparison summary.
+                        if (summary && (typeof summary?.mismatchedRows === 'number' || mismatches.length > 0)) {
+                            const message = buildActualResultMessage(resultPayload, false);
+                            finalize('fail', message, {
+                                sourceCount: summary?.sourceRowCount ?? 0,
+                                targetCount: summary?.targetRowCount ?? 0,
+                                sourceData: resultPayload?.source_data || [],
+                                targetData: resultPayload?.target_data || [],
+                                comparisonType: testCase.category || 'general',
+                                mismatchData: mismatches
+                            });
+                            toast({ title: "Mismatch Detected", description: message, variant: "destructive" });
+                            return;
                         }
-                    });
 
-                    toast({
-                        title: success ? "Test Passed" : "Issue Detected",
-                        description: message,
-                        variant: success ? "default" : "destructive"
-                    });
-                } else if (jobStatus === 'failed' || jobStatus === 'error') {
-                    clearInterval(pollInterval);
-                    const errorMsg = statusData?.error || "Agent failed to execute job";
-                    updateStatus({ status: 'fail', message: errorMsg, timestamp: new Date() });
-                    toast({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
-                }
-            }, 2000); // Poll every 2 seconds
+                        const errorMsg = errorText
+                            ? formatExecutionErrorMessage(errorText, 'execution')
+                            : "Execution failed before comparison result was produced.";
+                        finalize('fail', errorMsg);
+                        toast({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
+                    }
+                }, 2000); // Poll every 2 seconds
 
-            // Timeout after 60 seconds
-            setTimeout(() => {
-                clearInterval(pollInterval);
-                // check if still running?
-            }, 60000);
+                // Timeout after 60 seconds
+                const timeoutId = setTimeout(() => {
+                    finalize('fail', "Execution timed out while waiting for agent response. Please retry.");
+                }, 60000);
+            });
 
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : 'Unknown execution error';
             updateStatus({
                 status: 'fail',
-                message: errMsg,
+                message: formatExecutionErrorMessage(errMsg, 'submission'),
                 timestamp: new Date()
             });
-            toast({ title: "Submission Failed", description: errMsg, variant: "destructive" });
+            toast({ title: "Submission Failed", description: formatExecutionErrorMessage(errMsg, 'submission'), variant: "destructive" });
+            return 'fail';
         }
     };
 
@@ -832,13 +1019,15 @@ export default function AIComparison() {
 
         toast({ title: "Batch Execution Started", description: "Running all test cases sequentially..." });
 
+        let completedCount = 0;
         for (const tc of analysis.testCases) {
-            await handleRunTestCase(tc);
+            const result = await handleRunTestCase(tc);
+            if (result !== 'skipped') completedCount += 1;
             // Small delay to prevent overwhelming the server/browser
             await new Promise(r => setTimeout(r, 500));
         }
 
-        toast({ title: "Batch Complete", description: "All tests executed." });
+        toast({ title: "Batch Complete", description: `${completedCount} test case(s) finished. You can now save results.` });
     };
 
     const handleQueryCreate = (testCase: TestCase) => {
@@ -1246,13 +1435,24 @@ export default function AIComparison() {
         if (!analysis) return; // Connections are optional now for saving, though usually present
 
         try {
+            const passedTests = analysis.testCases.filter(tc => tc.lastRunResult?.status === 'pass').length;
+            const failedTests = analysis.testCases.filter(tc => tc.lastRunResult?.status === 'fail').length;
             const res = await reportsApi.saveTestRun({
                 sourceConnectionId: multiSourceMode ? null : sourceConnections[0]?.id,
                 sourceConnectionIds: multiSourceMode ? sourceConnections.map(c => c.id).filter(Boolean) : (sourceConnections[0]?.id ? [sourceConnections[0].id] : []),
                 targetConnectionId: targetConnection?.id, // Can be undefined
                 testCases: analysis.testCases,
                 fileName: name,
-                folderName: folderName
+                folderName: folderName,
+                summary: {
+                    isTestSuite: true,
+                    fileName: name,
+                    folderName: folderName || 'Uncategorized',
+                    totalTests: analysis.testCases.length,
+                    passedTests,
+                    failedTests,
+                    testCases: analysis.testCases
+                }
             });
 
             if (res.error) throw new Error(res.error);
@@ -1260,11 +1460,7 @@ export default function AIComparison() {
 
             // Refresh history
             const { data } = await reportsApi.list();
-            // API returns {reports: [...], total, limit, offset}
-            if (data && (data as any).reports && Array.isArray((data as any).reports)) {
-                const tests = (data as any).reports.filter((r: any) => r.summary?.isTestSuite);
-                setSavedRuns(tests);
-            }
+            setSavedRuns(normalizeSavedRuns(data));
 
         } catch (error) {
             console.error('Failed to save results:', error);
@@ -1346,11 +1542,7 @@ export default function AIComparison() {
             toast({ title: "Run Deleted", description: "Test run removed from history." });
             // Refresh history
             const listResponse = await reportsApi.list();
-            // API returns {reports: [...], total, limit, offset}
-            if (listResponse.data && (listResponse.data as any).reports && Array.isArray((listResponse.data as any).reports)) {
-                const tests = (listResponse.data as any).reports.filter((r: any) => r.summary?.isTestSuite);
-                setSavedRuns(tests);
-            }
+            setSavedRuns(normalizeSavedRuns(listResponse.data));
         } catch (error) {
             console.error("Delete failed", error);
             toast({ title: "Delete Failed", description: "Could not delete run.", variant: "destructive" });
@@ -1358,7 +1550,7 @@ export default function AIComparison() {
     };
 
     return (
-        <ResizablePanelGroup direction="horizontal" className="h-[calc(100vh-100px)] border rounded-lg overflow-hidden">
+        <ResizablePanelGroup direction="horizontal" className="h-[calc(100vh-100px)] overflow-hidden rounded-xl border bg-background">
             <ResizablePanel defaultSize={20} minSize={15} maxSize={30}>
                 <TestHistorySidebar
                     savedRuns={savedRuns}
@@ -1370,24 +1562,27 @@ export default function AIComparison() {
             <ResizableHandle withHandle />
 
             <ResizablePanel defaultSize={80}>
-                <div className="space-y-6 p-6 h-full overflow-auto bg-background/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div>
-                            <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-                                <div className="p-2 rounded-xl bg-gradient-to-br from-primary/20 to-primary/10 border border-primary/30">
-                                    <FileSpreadsheet className="h-7 w-7 text-primary" />
-                                </div>
-                                ETL Test Case Generator
-                            </h1>
-                            <p className="text-muted-foreground mt-1">Upload mapping sheet to auto-generate test cases</p>
-                        </div>
-                        <div className="flex gap-2">
+                <div className="h-full space-y-5 overflow-auto bg-muted/20 p-4 sm:p-6">
+                    <div className="rounded-xl border bg-card p-4 shadow-sm">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight sm:text-3xl">
+                                    <span className="rounded-lg border bg-primary/10 p-2">
+                                        <FileSpreadsheet className="h-6 w-6 text-primary" />
+                                    </span>
+                                    ETL Workflow
+                                </h1>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    Upload mapping sheet, validate structure, run ETL comparisons, and save run history.
+                                </p>
+                            </div>
                             <Button
                                 variant="outline"
                                 onClick={handleReset}
-                                className="gap-2 border-dashed border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300"
+                                className="h-9 gap-2 border-dashed"
                             >
-                                🔄 Reset Progress
+                                <RotateCcw className="h-4 w-4" />
+                                Reset Progress
                             </Button>
                         </div>
                     </div>
@@ -1400,67 +1595,69 @@ export default function AIComparison() {
                     >
                         {currentStep === 1 && (
                             <div className="space-y-4">
-                                <div>
-                                    <h2 className="text-2xl font-bold">Step 1: Manage Connections</h2>
-                                    <p className="text-muted-foreground mt-1">
+                                <div className="space-y-1">
+                                    <h2 className="text-xl font-semibold sm:text-2xl">Step 1: Manage Connections</h2>
+                                    <p className="text-sm text-muted-foreground">
                                         Create and manage your database connections. You need at least 2 connections (source and target) to proceed.
                                     </p>
                                 </div>
 
                                 {/* Agent Selection */}
-                                <div className="p-4 bg-muted/20 border border-muted rounded-lg flex items-center justify-between gap-4">
-                                    <div className="flex-1">
-                                        <h3 className="font-semibold text-sm flex items-center gap-2">
-                                            <div className={`h-2 w-2 rounded-full ${agents.find(a => a.id === selectedAgentId)?.status === 'online' ? 'bg-green-500' : 'bg-gray-300'}`} />
-                                            Select Active Agent
-                                        </h3>
-                                        <p className="text-xs text-muted-foreground mt-1">
-                                            Choose an active ETL agent to execute connections and tests.
-                                        </p>
+                                <div className="rounded-xl border bg-card p-4 shadow-sm">
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                        <div className="space-y-2">
+                                            <h3 className="text-sm font-semibold">Select Active Agent</h3>
+                                            <p className="text-xs text-muted-foreground">
+                                                Choose an active ETL agent to execute connections and tests.
+                                            </p>
+                                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                                                <Badge variant="outline" className="h-5 px-2">Total: {agents.length}</Badge>
+                                                <Badge variant="outline" className="h-5 border-emerald-200 bg-emerald-50 px-2 text-emerald-700">
+                                                    Active: {selectableAgents.length}
+                                                </Badge>
+                                                <Badge variant="outline" className="h-5 px-2 text-muted-foreground">
+                                                    Offline: {offlineAgents.length}
+                                                </Badge>
+                                            </div>
+                                        </div>
+                                        <div className="w-full max-w-sm space-y-2">
+                                            <Select
+                                                value={selectedAgentId}
+                                                onValueChange={(value) => setSelectedAgentId(value)}
+                                                disabled={loadingAgents || selectableAgents.length === 0}
+                                            >
+                                                <SelectTrigger className="h-9 w-full">
+                                                    <SelectValue placeholder={loadingAgents ? "Loading agents..." : "-- Select Agent --"} />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {agents.map((agent) => {
+                                                        const isSelectable = isAgentOnline(agent);
+                                                        const statusLabel = agent.status === "busy" ? "Busy" : isAgentOnline(agent) ? "Online" : "Offline";
+                                                        return (
+                                                            <SelectItem key={agent.id} value={agent.id} disabled={!isSelectable}>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span>{agent.agent_name}</span>
+                                                                    <Badge variant={statusLabel === "Offline" ? "outline" : "default"} className="h-4 text-[10px]">
+                                                                        {statusLabel}
+                                                                    </Badge>
+                                                                </div>
+                                                            </SelectItem>
+                                                        );
+                                                    })}
+                                                </SelectContent>
+                                            </Select>
+                                            {!loadingAgents && agents.length > 0 && selectableAgents.length === 0 && (
+                                                <p className="text-xs text-amber-700">
+                                                    No active agent available. Start an agent to continue.
+                                                </p>
+                                            )}
+                                            {selectedAgentId && (
+                                                <p className="text-xs text-muted-foreground">
+                                                    Selected: {agents.find((a) => a.id === selectedAgentId)?.agent_name || "Unknown"}.
+                                                </p>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="w-[300px]">
-                                        <Select
-                                            value={selectedAgentId}
-                                            onValueChange={(value) => setSelectedAgentId(value)}
-                                            disabled={loadingAgents}
-                                        >
-                                            <SelectTrigger className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                                                <SelectValue placeholder="-- Select Agent --" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {agents.map((agent) => {
-                                                    const isOnline = isAgentOnline(agent);
-                                                    return (
-                                                        <SelectItem key={agent.id} value={agent.id} disabled={!isOnline}>
-                                                            <div className="flex items-center gap-2">
-                                                                <span>{agent.agent_name}</span>
-                                                                <Badge variant={isOnline ? "default" : "outline"} className="text-[10px] h-4">
-                                                                    {isOnline ? "Online" : "Offline"}
-                                                                </Badge>
-                                                            </div>
-                                                        </SelectItem>
-                                                    );
-                                                })}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                            if (projectId) {
-                                                window.open(`/project/${projectId}/agents`, "_blank");
-                                                return;
-                                            }
-
-                                            toast({
-                                                title: "Open Self-Hosted Agents",
-                                                description: "Open any Project and select \"Self-Hosted Agents\" from the left menu.",
-                                            });
-                                        }}
-                                    >
-                                        Manage Agents
-                                    </Button>
                                 </div>
 
                                 <ConnectionsPanel

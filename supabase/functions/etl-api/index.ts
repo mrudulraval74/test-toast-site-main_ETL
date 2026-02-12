@@ -234,6 +234,25 @@ Deno.serve(async (req) => {
             return new Response(JSON.stringify({ reports: data || [] }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
+        if (path.match(/^\/reports\/[\w-]+$/) && req.method === 'GET') {
+            const id = path.split('/').pop();
+            const { data, error } = await supabase
+                .from('reports')
+                .select('*')
+                .eq('compare_id', id)
+                .maybeSingle();
+
+            if (error) throw error;
+            if (!data) {
+                return new Response(JSON.stringify({ error: 'Report not found' }), {
+                    status: 404,
+                    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+                });
+            }
+
+            return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
         if (path.match(/^\/reports\/[\w-]+$/) && req.method === 'DELETE') {
             const id = path.split('/').pop();
             const { error } = await supabase.from('reports').delete().eq('compare_id', id);

@@ -375,7 +375,7 @@ export function ComparisonTab({
                                         <span className="text-xs font-semibold text-muted-foreground uppercase flex items-center gap-1 mb-1">
                                             <FileCode className="h-3 w-3" /> Actual Result
                                         </span>
-                                        <p className={`line-clamp-2 text-xs ${tc.lastRunResult ? 'text-foreground font-medium' : 'text-muted-foreground italic'}`}>
+                                        <p className={`text-xs whitespace-pre-wrap ${tc.lastRunResult?.status === 'fail' ? '' : 'line-clamp-2'} ${tc.lastRunResult ? 'text-foreground font-medium' : 'text-muted-foreground italic'}`}>
                                             {tc.lastRunResult ? tc.lastRunResult.message : 'Not executed yet'}
                                         </p>
                                     </div>

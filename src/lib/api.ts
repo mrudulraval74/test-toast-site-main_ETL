@@ -259,10 +259,10 @@ export const compareApi = {
     }
   },
   status: async (runId: string) => {
-    // ETL status is checked via reports table in etl-agent-api or direct DB
+    // ETL status is tracked in agent_job_queue
     try {
       const headers = await getAuthHeaders();
-      const response = await fetch(`${ETL_API_BASE_URL}/reports/${runId}`, {
+      const response = await fetch(`${ETL_API_BASE_URL}/jobs/${runId}`, {
         headers
       });
       const data = await response.json();
@@ -274,7 +274,8 @@ export const compareApi = {
   results: async (runId: string) => {
     try {
       const headers = await getAuthHeaders();
-      const response = await fetch(`${ETL_API_BASE_URL}/reports/${runId}`, {
+      // Alias to job details endpoint for ETL comparison result retrieval
+      const response = await fetch(`${ETL_API_BASE_URL}/jobs/${runId}`, {
         headers
       });
       const data = await response.json();
@@ -321,9 +322,48 @@ export const reportsApi = {
     return { data, error: null };
   },
   saveTestRun: async (data: any) => {
-    const { id, ...payload } = data;
-    // 'reports' table uses 'compare_id', 'source_connection_id' etc.
-    // Ensure payload matches schema.
+    const {
+      id,
+      sourceConnectionId,
+      sourceConnectionIds,
+      targetConnectionId,
+      testCases,
+      fileName,
+      folderName,
+      summary,
+      ...rest
+    } = data || {};
+
+    const compareId = rest.compareId || rest.compare_id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `cmp_${Date.now()}`);
+    const normalizedTestCases = Array.isArray(testCases) ? testCases : (summary?.testCases || []);
+    const fallbackSourceQuery = normalizedTestCases[0]?.sourceSQL || normalizedTestCases[0]?.source_sql || "SELECT 1 AS SourceCheck";
+    const fallbackTargetQuery = normalizedTestCases[0]?.targetSQL || normalizedTestCases[0]?.target_sql || "SELECT 1 AS TargetCheck";
+    const sourceQuery = rest.source_query || rest.sourceQuery || fallbackSourceQuery;
+    const targetQuery = rest.target_query || rest.targetQuery || fallbackTargetQuery;
+
+    // Map UI payload to actual reports schema (snake_case columns).
+    const payload = {
+      compare_id: compareId,
+      name: fileName || rest.name || "Saved ETL Run",
+      note: folderName ? `Folder: ${folderName}` : (rest.note || null),
+      source_connection_id: sourceConnectionId || rest.source_connection_id || null,
+      target_connection_id: targetConnectionId || rest.target_connection_id || null,
+      source_query: sourceQuery,
+      target_query: targetQuery,
+      status: rest.status || "completed",
+      progress: 100,
+      summary: {
+        ...(summary || {}),
+        isTestSuite: true,
+        fileName: fileName || summary?.fileName || "Saved ETL Run",
+        folderName: folderName || summary?.folderName || "Uncategorized",
+        testCases: normalizedTestCases,
+        sourceConnectionIds: Array.isArray(sourceConnectionIds) ? sourceConnectionIds : [],
+      },
+      error_message: rest.error_message || null,
+      completed_at: new Date().toISOString(),
+    };
+
     const { data: result, error } = await supabase
       .from('reports' as any)
       .insert([payload])

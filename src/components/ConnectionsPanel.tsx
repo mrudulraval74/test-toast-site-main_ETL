@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,7 +12,7 @@ import { connectionsApi, API_BASE_URL } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { getValidationMessage, formatValidationMessage } from '@/lib/validationMessages';
 import { helpContent } from '@/lib/helpContent';
-import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, ChevronDown, ChevronUp, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, ChevronDown, ChevronUp, Eye, EyeOff, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Tooltip,
@@ -87,6 +87,58 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAction, setAiAction] = useState<string | null>(null);
   const [showSqlPassword, setShowSqlPassword] = useState(false);
+  const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
+  const [currentConnectionsPage, setCurrentConnectionsPage] = useState(1);
+  const [connectionsPerPage, setConnectionsPerPage] = useState(12);
+
+  const filteredConnections = useMemo(() => {
+    const searchTerm = connectionSearchTerm.trim().toLowerCase();
+    if (!searchTerm) return savedConnections;
+
+    return savedConnections.filter((conn) => {
+      const name = (conn.name || '').toLowerCase();
+      const type = (conn.type || '').toLowerCase();
+      const host = (conn.host || '').toLowerCase();
+      const instance = (conn.instance || '').toLowerCase();
+      return (
+        name.includes(searchTerm) ||
+        type.includes(searchTerm) ||
+        host.includes(searchTerm) ||
+        instance.includes(searchTerm)
+      );
+    });
+  }, [savedConnections, connectionSearchTerm]);
+
+  const totalConnectionsPages = Math.max(1, Math.ceil(filteredConnections.length / connectionsPerPage));
+  const paginatedConnections = useMemo(() => {
+    const startIndex = (currentConnectionsPage - 1) * connectionsPerPage;
+    return filteredConnections.slice(startIndex, startIndex + connectionsPerPage);
+  }, [filteredConnections, currentConnectionsPage, connectionsPerPage]);
+
+  const connectionsPaginationItems = useMemo(() => {
+    const pages: Array<number | string> = [];
+
+    if (totalConnectionsPages <= 7) {
+      for (let page = 1; page <= totalConnectionsPages; page += 1) {
+        pages.push(page);
+      }
+      return pages;
+    }
+
+    pages.push(1);
+
+    const start = Math.max(2, currentConnectionsPage - 1);
+    const end = Math.min(totalConnectionsPages - 1, currentConnectionsPage + 1);
+
+    if (start > 2) pages.push('ellipsis-start');
+    for (let page = start; page <= end; page += 1) {
+      pages.push(page);
+    }
+    if (end < totalConnectionsPages - 1) pages.push('ellipsis-end');
+
+    pages.push(totalConnectionsPages);
+    return pages;
+  }, [currentConnectionsPage, totalConnectionsPages]);
 
   const [mssqlData, setMssqlData] = useState({
     name: '',
@@ -224,6 +276,10 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
   useEffect(() => {
     loadSavedConnections();
   }, []);
+
+  useEffect(() => {
+    setCurrentConnectionsPage(1);
+  }, [connectionSearchTerm, connectionsPerPage, savedConnections.length]);
 
   const loadSavedConnections = async () => {
     const { data, error } = await connectionsApi.list();
@@ -1288,13 +1344,133 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     }
   };
 
+  const renderConnectionActions = (conn: any) => (
+    <div className="mt-auto flex flex-wrap gap-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 px-2"
+            onClick={() => {
+              if (connectionId === conn.id && databaseTree.length > 0) {
+                setConnectionId(null);
+                setDatabaseTree([]);
+              } else {
+                handleFetchDatabases(conn.id);
+              }
+            }}
+            disabled={loadingDatabases && connectionId === conn.id}
+          >
+            {loadingDatabases && connectionId === conn.id ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : connectionId === conn.id && databaseTree.length > 0 ? (
+              <X className="h-3.5 w-3.5" />
+            ) : (
+              <Database className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {connectionId === conn.id && databaseTree.length > 0
+            ? 'Collapse Database Structure'
+            : 'Fetch Database Structure'}
+        </TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 px-2"
+            onClick={() => handleDuplicateConnection(conn)}
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Duplicate</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 px-2"
+            onClick={() => handleEditConnection(conn)}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Edit</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-8 px-2"
+            onClick={() => {
+              setConnectionToDelete(conn);
+              setDeleteDialogOpen(true);
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Delete</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+
+  const renderConnectionDetails = (conn: any) => {
+    if (loadingDatabases && connectionId === conn.id) {
+      return (
+        <div className="mt-4 pt-4 border-t flex flex-col items-center justify-center space-y-2">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          <p className="text-xs text-muted-foreground italic">{fetchingStatus || 'Fetching database structure...'}</p>
+        </div>
+      );
+    }
+
+    if (connectionId === conn.id && databaseTree.length > 0) {
+      return (
+        <div className="mt-4 pt-4 border-t">
+          <DatabaseTree
+            data={databaseTree}
+            loading={loadingDatabases && connectionId === conn.id}
+            error={connectionId === conn.id ? metadataError : null}
+          />
+        </div>
+      );
+    }
+
+    if (connectionId === conn.id && metadataError) {
+      return (
+        <div className="mt-4 pt-4 border-t">
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription className="text-xs">{metadataError}</AlertDescription>
+          </Alert>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
   return (
     <>
       <div className="space-y-6">
         {/* Saved Connections List */}
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">Saved Connections</h3>
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold">Saved Connections</h3>
+              <p className="text-xs text-muted-foreground">Manage and reuse database endpoints for ETL validation and execution.</p>
+            </div>
             <div className="flex items-center gap-2">
               <Button onClick={() => {
                 setShowNewForm(!showNewForm);
@@ -1302,7 +1478,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                   setEditingConnectionId(null);
                   resetAllForms();
                 }
-              }}>
+              }} className="h-9">
                 {showNewForm ? 'Cancel' : 'Add New Connection'}
               </Button>
             </div>
@@ -1311,9 +1487,9 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
           {!showNewForm && (
             <div className="space-y-4">
               {/* Embedded AI for creating new connection */}
-              <Card className="p-4 border-dashed border-2 bg-muted/20">
+              <Card className="border-2 border-dashed bg-muted/20 p-4 shadow-none">
                 <div className="flex flex-col gap-2">
-                  <Label className="text-sm text-muted-foreground">✨ Describe a connection to create it instantly</Label>
+                  <Label className="text-sm text-muted-foreground">Describe a connection to create it instantly</Label>
                   <AIInput
                     placeholder="e.g., 'Create a MySQL connection to localhost named Local DB'"
                     onGenerate={handleAIGenerate}
@@ -1329,121 +1505,159 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                   <Button onClick={() => setShowNewForm(true)}>Create Your First Connection</Button>
                 </Card>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {savedConnections.map((conn) => (
-                    <Card key={conn.id} className="p-4 flex flex-col hover:shadow-md transition-shadow">
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-base truncate" title={conn.name}>{conn.name}</h3>
-                          <p className="text-xs text-muted-foreground truncate" title={`${conn.type.toUpperCase()} - ${conn.host}${conn.instance ? '\\' + conn.instance : ''}`}>
-                            {conn.type.toUpperCase()} - {conn.host}
-                            {conn.instance && `\\${conn.instance}`}
-                          </p>
-                        </div>
+                <div className="space-y-4">
+                  <Card className="border-border/80 p-3 shadow-sm">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="relative w-full lg:max-w-md">
+                        <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          className="h-8 pl-8 pr-8"
+                          placeholder="Search connections by name, type, host, or instance..."
+                          value={connectionSearchTerm}
+                          onChange={(e) => setConnectionSearchTerm(e.target.value)}
+                        />
+                        {connectionSearchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setConnectionSearchTerm('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            aria-label="Clear search"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
-                      <div className="flex flex-wrap gap-1 mt-auto">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-2"
-                              onClick={() => {
-                                if (connectionId === conn.id && databaseTree.length > 0) {
-                                  // Collapse
-                                  setConnectionId(null);
-                                  setDatabaseTree([]);
-                                } else {
-                                  // Fetch
-                                  handleFetchDatabases(conn.id);
-                                }
-                              }}
-                              disabled={loadingDatabases && connectionId === conn.id}
-                            >
-                              {loadingDatabases && connectionId === conn.id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : connectionId === conn.id && databaseTree.length > 0 ? (
-                                <X className="h-3.5 w-3.5" />
-                              ) : (
-                                <Database className="h-3.5 w-3.5" />
-                              )}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {connectionId === conn.id && databaseTree.length > 0
-                              ? 'Collapse Database Structure'
-                              : 'Fetch Database Structure'}
-                          </TooltipContent>
-                        </Tooltip>
 
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-2"
-                              onClick={() => handleDuplicateConnection(conn)}
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Duplicate</TooltipContent>
-                        </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-2"
-                              onClick={() => handleEditConnection(conn)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit</TooltipContent>
-                        </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              className="h-8 px-2"
-                              onClick={() => {
-                                setConnectionToDelete(conn);
-                                setDeleteDialogOpen(true);
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Delete</TooltipContent>
-                        </Tooltip>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="whitespace-nowrap text-xs text-muted-foreground">
+                          {filteredConnections.length} of {savedConnections.length}
+                        </span>
+                        <Select value={String(connectionsPerPage)} onValueChange={(value) => setConnectionsPerPage(Number(value))}>
+                          <SelectTrigger className="h-8 w-[108px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="12">12 / page</SelectItem>
+                            <SelectItem value="24">24 / page</SelectItem>
+                            <SelectItem value="48">48 / page</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2"
+                          disabled={currentConnectionsPage <= 1}
+                          onClick={() => setCurrentConnectionsPage((prev) => Math.max(1, prev - 1))}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2"
+                          disabled={currentConnectionsPage >= totalConnectionsPages}
+                          onClick={() => setCurrentConnectionsPage((prev) => Math.min(totalConnectionsPages, prev + 1))}
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
                       </div>
-                      {loadingDatabases && connectionId === conn.id ? (
-                        <div className="mt-4 pt-4 border-t flex flex-col items-center justify-center space-y-2">
-                          <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                          <p className="text-xs text-muted-foreground italic">{fetchingStatus || 'Fetching database structure...'}</p>
-                        </div>
-                      ) : connectionId === conn.id && databaseTree.length > 0 ? (
-                        <div className="mt-4 pt-4 border-t">
-                          <DatabaseTree
-                            data={databaseTree}
-                            loading={loadingDatabases && connectionId === conn.id}
-                            error={connectionId === conn.id ? metadataError : null}
-                          />
-                        </div>
-                      ) : connectionId === conn.id && metadataError ? (
-                        <div className="mt-4 pt-4 border-t">
-                          <Alert variant="destructive">
-                            <AlertCircle className="h-4 w-4" />
-                            <AlertDescription className="text-xs">{metadataError}</AlertDescription>
-                          </Alert>
-                        </div>
-                      ) : null}
+                    </div>
+                  </Card>
+
+                  {filteredConnections.length === 0 ? (
+                    <Card className="p-6 text-center">
+                      <p className="text-sm font-medium">No connections match your search.</p>
+                      <p className="text-xs text-muted-foreground mt-1">Try a different term or clear the current filter.</p>
                     </Card>
-                  ))}
+                  ) : (
+                    <>
+                      <div className="space-y-2 lg:hidden">
+                        <div className="grid grid-cols-[1.2fr_1fr_auto] items-center rounded-md border bg-muted/30 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          <span>Name</span>
+                          <span>Type / Host</span>
+                          <span className="text-right">Actions</span>
+                        </div>
+                        {paginatedConnections.map((conn) => (
+                          <Card key={conn.id} className="border-border/80 p-3 shadow-sm">
+                            <div className="space-y-2">
+                              <div className="grid grid-cols-[1.2fr_1fr_auto] items-start gap-2">
+                                <div className="min-w-0">
+                                  <h3 className="truncate text-sm font-semibold" title={conn.name}>{conn.name}</h3>
+                                </div>
+                                <p className="truncate text-xs text-muted-foreground" title={`${conn.type.toUpperCase()} - ${conn.host}${conn.instance ? '\\' + conn.instance : ''}`}>
+                                  {conn.type.toUpperCase()} - {conn.host}
+                                  {conn.instance && `\\${conn.instance}`}
+                                </p>
+                                <div className="justify-self-end">{renderConnectionActions(conn)}</div>
+                              </div>
+                              {connectionId === conn.id && renderConnectionDetails(conn)}
+                            </div>
+                          </Card>
+                        ))}
+                      </div>
+
+                      <div className="hidden gap-4 lg:grid lg:grid-cols-2 xl:grid-cols-3">
+                        {paginatedConnections.map((conn) => (
+                          <Card key={conn.id} className="flex flex-col border-border/80 p-4 shadow-sm transition-shadow hover:shadow-md">
+                            <div className="mb-3 flex items-start justify-between">
+                              <div className="min-w-0 flex-1">
+                                <h3 className="truncate text-base font-semibold" title={conn.name}>{conn.name}</h3>
+                                <p className="mt-0.5 truncate text-xs text-muted-foreground" title={`${conn.type.toUpperCase()} - ${conn.host}${conn.instance ? '\\' + conn.instance : ''}`}>
+                                  {conn.type.toUpperCase()} - {conn.host}
+                                  {conn.instance && `\\${conn.instance}`}
+                                </p>
+                              </div>
+                            </div>
+                            {renderConnectionActions(conn)}
+                            {renderConnectionDetails(conn)}
+                          </Card>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {filteredConnections.length > 0 && (
+                    <div className="flex flex-col gap-2 pt-1 md:flex-row md:items-center md:justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        Page {currentConnectionsPage} of {totalConnectionsPages}
+                      </p>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2"
+                          disabled={currentConnectionsPage <= 1}
+                          onClick={() => setCurrentConnectionsPage((prev) => Math.max(1, prev - 1))}
+                        >
+                          <ChevronLeft className="h-4 w-4 mr-1" /> Previous
+                        </Button>
+                        {connectionsPaginationItems.map((item, index) => (
+                          typeof item === 'number' ? (
+                            <Button
+                              key={`page-${item}`}
+                              variant={item === currentConnectionsPage ? 'default' : 'outline'}
+                              size="sm"
+                              className="h-8 min-w-8 px-2"
+                              onClick={() => setCurrentConnectionsPage(item)}
+                            >
+                              {item}
+                            </Button>
+                          ) : (
+                            <span key={`${item}-${index}`} className="px-1 text-muted-foreground">...</span>
+                          )
+                        ))}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-2"
+                          disabled={currentConnectionsPage >= totalConnectionsPages}
+                          onClick={() => setCurrentConnectionsPage((prev) => Math.min(totalConnectionsPages, prev + 1))}
+                        >
+                          Next <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

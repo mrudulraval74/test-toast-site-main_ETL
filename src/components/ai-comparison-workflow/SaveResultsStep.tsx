@@ -78,29 +78,29 @@ export function SaveResultsStep({
     }
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
-            <div>
-                <h2 className="text-2xl font-bold">Save Results</h2>
-                <p className="text-muted-foreground mt-1">
+        <div className="space-y-5">
+            <div className="space-y-1">
+                <h2 className="text-xl font-semibold sm:text-2xl">Save Results</h2>
+                <p className="text-sm text-muted-foreground">
                     Review your test results and save to history
                 </p>
             </div>
 
             {/* Summary Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card className="bg-gradient-to-br from-primary/5 to-primary/10 border-primary/20">
-                    <CardContent className="p-6">
+                <Card className="border-primary/20 bg-primary/5">
+                    <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-2">
                             <span className="text-sm font-medium text-muted-foreground">Test Suite</span>
                             <FileSpreadsheet className="h-5 w-5 text-primary" />
                         </div>
-                        <div className="text-2xl font-bold">{uploadedFile.name}</div>
+                        <div className="truncate text-2xl font-bold" title={uploadedFile.name}>{uploadedFile.name}</div>
                         <p className="text-xs text-muted-foreground mt-1">{testCases.length} test cases</p>
                     </CardContent>
                 </Card>
 
-                <Card className="bg-gradient-to-br from-green-50 to-green-50/50 border-green-200">
-                    <CardContent className="p-6">
+                <Card className="border-emerald-200 bg-emerald-50/70">
+                    <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-2">
                             <span className="text-sm font-medium text-green-700">Success Rate</span>
                             <TrendingUp className="h-5 w-5 text-green-600" />
@@ -110,8 +110,8 @@ export function SaveResultsStep({
                     </CardContent>
                 </Card>
 
-                <Card className="bg-gradient-to-br from-blue-50 to-blue-50/50 border-blue-200">
-                    <CardContent className="p-6">
+                <Card className="border-blue-200 bg-blue-50/70">
+                    <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-2">
                             <span className="text-sm font-medium text-blue-700">Execution Status</span>
                             <Clock className="h-5 w-5 text-blue-600" />
@@ -127,7 +127,7 @@ export function SaveResultsStep({
             </div>
 
             {/* Results Breakdown */}
-            <Card>
+            <Card className="border-border/80 shadow-sm">
                 <CardHeader>
                     <CardTitle>Results Breakdown</CardTitle>
                     <CardDescription>
@@ -135,26 +135,26 @@ export function SaveResultsStep({
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="text-center p-4 rounded-lg bg-muted/30">
+                    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                        <div className="rounded-lg bg-muted/30 p-4 text-center">
                             <div className="text-3xl font-bold">{stats.total}</div>
                             <div className="text-xs text-muted-foreground mt-1 uppercase">Total Tests</div>
                         </div>
-                        <div className="text-center p-4 rounded-lg bg-green-50 border border-green-200">
+                        <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center">
                             <div className="flex items-center justify-center gap-1 mb-1">
                                 <CheckCircle className="h-4 w-4 text-green-600" />
                                 <div className="text-3xl font-bold text-green-700">{stats.passed}</div>
                             </div>
                             <div className="text-xs text-green-700 uppercase font-medium">Passed</div>
                         </div>
-                        <div className="text-center p-4 rounded-lg bg-red-50 border border-red-200">
+                        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-center">
                             <div className="flex items-center justify-center gap-1 mb-1">
                                 <XCircle className="h-4 w-4 text-red-600" />
                                 <div className="text-3xl font-bold text-red-700">{stats.failed}</div>
                             </div>
                             <div className="text-xs text-red-700 uppercase font-medium">Failed</div>
                         </div>
-                        <div className="text-center p-4 rounded-lg bg-blue-50 border border-blue-200">
+                        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-center">
                             <div className="flex items-center justify-center gap-1 mb-1">
                                 <Clock className="h-4 w-4 text-blue-600" />
                                 <div className="text-3xl font-bold text-blue-700">{stats.pending}</div>
@@ -192,8 +192,8 @@ export function SaveResultsStep({
             )}
 
             {/* Action Buttons */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Card className="border-2 border-primary/20 bg-primary/5">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Card className="border-primary/20 bg-primary/5">
                     <CardHeader>
                         <CardTitle className="text-lg flex items-center gap-2">
                             <Save className="h-5 w-5 text-primary" />
@@ -204,11 +204,7 @@ export function SaveResultsStep({
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <Button
-                            onClick={onSaveResults}
-                            className="w-full gap-2 shadow-sm"
-                            size="lg"
-                        >
+                        <Button onClick={onSaveResults} className="h-10 w-full gap-2 shadow-sm">
                             <Save className="h-4 w-4" />
                             Save Test Run
                         </Button>
@@ -218,7 +214,7 @@ export function SaveResultsStep({
                     </CardContent>
                 </Card>
 
-                <Card className="border-2 border-border bg-muted/10">
+                <Card className="border-border bg-muted/10">
                     <CardHeader>
                         <CardTitle className="text-lg flex items-center gap-2">
                             <Download className="h-5 w-5" />
@@ -231,11 +227,7 @@ export function SaveResultsStep({
                     <CardContent className="space-y-2">
                         {onExportResults && (
                             <>
-                                <Button
-                                    variant="outline"
-                                    className="w-full gap-2"
-                                    onClick={() => onExportResults('sql')}
-                                >
+                                <Button variant="outline" className="h-9 w-full gap-2" onClick={() => onExportResults('sql')}>
                                     <FileSpreadsheet className="h-4 w-4" />
                                     Export as SQL Script
                                 </Button>

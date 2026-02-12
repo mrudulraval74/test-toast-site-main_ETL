@@ -81,6 +81,32 @@ function getPhasePrefix(sourceTable: string, targetTable: string): string {
     return 'Source To Landing'; // Default
 }
 
+function isUsableColumnName(columnName: string | undefined | null): boolean {
+    if (!columnName) return false;
+    const value = String(columnName).trim();
+    if (!value) return false;
+
+    const normalized = value.toLowerCase();
+    const blocked = [
+        'unknown',
+        'source',
+        'target',
+        'n/a',
+        'na',
+        '-',
+        '--',
+        'column',
+        'field',
+        'null',
+        'none'
+    ];
+
+    if (blocked.includes(normalized)) return false;
+    if (/^column[_\s-]?\d+$/i.test(value)) return false;
+    if (value.includes('[Auto-detected') || value.includes('[Configure')) return false;
+    return true;
+}
+
 export function generateMappingSpecificTests(
     mappingData: any[],
     sourceSchema?: DatabaseSchema | null,
@@ -126,6 +152,12 @@ export function generateMappingSpecificTests(
     parsed.columnMappings.forEach(mapping => {
         const sTab = mapping.sourceTable || defaultSourceTable;
         const tTab = mapping.targetTable || defaultTargetTable;
+        const hasUsableSource = isUsableColumnName(mapping.sourceColumn);
+        const hasUsableTarget = isUsableColumnName(mapping.targetColumn);
+
+        if (!hasUsableSource || !hasUsableTarget) {
+            return;
+        }
 
         const sourceValid = validateColumnExists(sourceSchema, sTab, mapping.sourceColumn);
         const targetValid = validateColumnExists(targetSchema, tTab, mapping.targetColumn);
@@ -244,7 +276,7 @@ export function generateMappingSpecificTests(
         });
 
         // 3. Null Data Validation (Sources vs Target)
-        const firstCol = mappings[0]?.sourceColumn;
+        const firstCol = mappings.find(m => isUsableColumnName(m.sourceColumn))?.sourceColumn;
         if (firstCol) {
             testCases.push({
                 name: `${phase} | 3. Null Data Validation | ${targetTable}`,
@@ -252,7 +284,7 @@ export function generateMappingSpecificTests(
                 sourceSQL: qSrcs.length === 1
                     ? `SELECT count(*) as NullCount FROM ${qSrcs[0]} WHERE ${quoteSource(firstCol)} IS NULL`
                     : `SELECT SUM(NullCount) as NullCount FROM (${qSrcs.map(qs => `SELECT count(*) as NullCount FROM ${qs} WHERE ${quoteSource(firstCol)} IS NULL`).join(' UNION ALL ')}) as all_src`,
-                targetSQL: `SELECT count(*) as NullCount FROM ${qTgt} WHERE ${quoteTarget(mappings[0]?.targetColumn || firstCol)} IS NULL`,
+                targetSQL: `SELECT count(*) as NullCount FROM ${qTgt} WHERE ${quoteTarget(mappings.find(m => isUsableColumnName(m.targetColumn))?.targetColumn || firstCol)} IS NULL`,
                 expectedResult: 'Null counts for mapped columns should be identical.',
                 category: 'general',
                 severity: 'major'
@@ -282,8 +314,9 @@ export function generateMappingSpecificTests(
 
         // Fallback: If no schema PK is mapped, use the first column from the mapping as the "key"
         if (pkSrc.length === 0) {
-            pkSrc = [mappings[0]?.sourceColumn || 'ID'];
-            pkTgt = [mappings[0]?.targetColumn || 'ID'];
+            const firstValidMap = mappings.find(m => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
+            pkSrc = [firstValidMap?.sourceColumn || 'ID'];
+            pkTgt = [firstValidMap?.targetColumn || 'ID'];
         }
 
         const sKeyList = pkSrc.map(c => quoteSource(c)).join(', ');

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     Download, Code, Database, FileCode, Copy, Play, Plus, Edit, Trash2,
     CheckCircle, AlertTriangle, XCircle, Search, Settings, Sparkles
@@ -103,6 +103,8 @@ export function TestComparisonStep({
     const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [selectedTests, setSelectedTests] = useState<number[]>([]); // For bulk delete
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(8);
     const [editForm, setEditForm] = useState<TestCase>({
         name: '',
         category: 'general',
@@ -169,10 +171,25 @@ export function TestComparisonStep({
         get pending() { return this.total - (this.passed + this.failed + this.running) }
     };
 
-    const filteredTestCases = testCases.filter(tc =>
-        (tc.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (tc.description || '').toLowerCase().includes(searchTerm.toLowerCase())
+    const filteredTestCases = useMemo(
+        () => testCases
+            .map((tc, index) => ({ tc, index }))
+            .filter(({ tc }) =>
+                (tc.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (tc.description || '').toLowerCase().includes(searchTerm.toLowerCase())
+            ),
+        [testCases, searchTerm]
     );
+
+    const totalPages = Math.max(1, Math.ceil(filteredTestCases.length / itemsPerPage));
+    const paginatedTestCases = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredTestCases.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredTestCases, currentPage, itemsPerPage]);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, itemsPerPage, testCases.length]);
 
     // If we have no test cases at all, show the empty state with generate button
     const hasData = (analysis || uploadedFile) && testCases.length > 0;
@@ -201,17 +218,17 @@ export function TestComparisonStep({
     }
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
-            <div>
-                <h2 className="text-2xl font-bold">Test Comparison</h2>
-                <p className="text-muted-foreground mt-1">
+        <div className="space-y-5">
+            <div className="space-y-1">
+                <h2 className="text-xl font-semibold sm:text-2xl">Test Comparison</h2>
+                <p className="text-sm text-muted-foreground">
                     Run and manage test cases for data comparison
                 </p>
             </div>
 
             {/* Execution Dashboard */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <Card className="bg-muted/20 border-border/50 shadow-sm">
+                <Card className="border-border/80 bg-card shadow-sm">
                     <CardContent className="p-4 flex flex-col items-center justify-center text-center">
                         <span className="text-muted-foreground text-xs uppercase font-semibold flex items-center gap-1">
                             <Database className="h-3 w-3" /> Total Tests
@@ -219,7 +236,7 @@ export function TestComparisonStep({
                         <span className="text-2xl font-bold mt-1">{stats.total}</span>
                     </CardContent>
                 </Card>
-                <Card className="bg-green-50/50 border-green-100 shadow-sm">
+                <Card className="border-emerald-200 bg-emerald-50/60 shadow-sm">
                     <CardContent className="p-4 flex flex-col items-center justify-center text-center">
                         <span className="text-green-700 text-xs uppercase font-semibold flex items-center gap-1">
                             <CheckCircle className="h-3 w-3" /> Passed
@@ -227,7 +244,7 @@ export function TestComparisonStep({
                         <span className="text-2xl font-bold text-green-700 mt-1">{stats.passed}</span>
                     </CardContent>
                 </Card>
-                <Card className="bg-red-50/50 border-red-100 shadow-sm">
+                <Card className="border-rose-200 bg-rose-50/60 shadow-sm">
                     <CardContent className="p-4 flex flex-col items-center justify-center text-center">
                         <span className="text-red-700 text-xs uppercase font-semibold flex items-center gap-1">
                             <XCircle className="h-3 w-3" /> Failed
@@ -235,7 +252,7 @@ export function TestComparisonStep({
                         <span className="text-2xl font-bold text-red-700 mt-1">{stats.failed}</span>
                     </CardContent>
                 </Card>
-                <Card className="bg-blue-50/50 border-blue-100 shadow-sm">
+                <Card className="border-blue-200 bg-blue-50/60 shadow-sm">
                     <CardContent className="p-4 flex flex-col items-center justify-center text-center">
                         <span className="text-blue-700 text-xs uppercase font-semibold flex items-center gap-1">
                             <Settings className="h-3 w-3" /> Pending
@@ -246,34 +263,35 @@ export function TestComparisonStep({
             </div>
 
             {/* Header Actions */}
-            <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between bg-card p-4 rounded-lg border shadow-sm">
-                <div>
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                        <Code className="h-5 w-5 text-primary" />
+            <div className="rounded-xl border bg-card p-4 shadow-sm">
+                <div className="mb-3">
+                    <h3 className="flex items-center gap-2 text-base font-semibold">
+                        <Code className="h-4 w-4 text-primary" />
                         Test Case Manager
                     </h3>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-xs text-muted-foreground sm:text-sm">
                         {testCases.length} generated test cases for {uploadedFile?.name || 'Unknown File'}
-                        {selectedTests.length > 0 && <span className="text-primary font-semibold"> • {selectedTests.length} selected</span>}
+                        {selectedTests.length > 0 && <span className="text-primary font-semibold"> | {selectedTests.length} selected</span>}
                     </p>
                 </div>
-                <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                    <div className="relative flex-1 md:w-64">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="relative w-full md:max-w-sm">
                         <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                         <Input
                             placeholder="Search test cases..."
-                            className="pl-8"
+                            className="h-9 pl-8"
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
                     </div>
+                    <div className="flex flex-wrap gap-2 w-full md:w-auto">
                     {selectedTests.length > 0 && onSaveSelected && (
                         <Button
                             onClick={() => {
                                 onSaveSelected(selectedTests);
                             }}
                             variant="default"
-                            className="gap-2 bg-primary"
+                            className="h-9 gap-2 bg-primary"
                         >
                             <CheckCircle className="h-4 w-4" />
                             Save Selected ({selectedTests.length})
@@ -289,7 +307,7 @@ export function TestComparisonStep({
                                 setSelectedTests([]);
                             }}
                             variant="destructive"
-                            className="gap-2"
+                            className="h-9 gap-2"
                         >
                             <Trash2 className="h-4 w-4" />
                             Delete ({selectedTests.length})
@@ -298,24 +316,24 @@ export function TestComparisonStep({
                     {onRunAll && (
                         <Button
                             onClick={onRunAll}
-                            className="gap-2 bg-green-600 hover:bg-green-700 text-white shadow-sm"
+                            className="h-9 gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
                         >
                             <Play className="h-4 w-4" />
                             Run All
                         </Button>
                     )}
-                    <Button onClick={() => { resetForm(); setIsAddDialogOpen(true); }} variant="secondary" className="gap-2">
+                    <Button onClick={() => { resetForm(); setIsAddDialogOpen(true); }} variant="secondary" className="h-9 gap-2">
                         <Plus className="h-4 w-4" />
                         Add Case
                     </Button>
-                    <div className="h-8 w-px bg-border mx-2 hidden md:block" />
+                    <div className="mx-1 hidden h-9 w-px bg-border md:block" />
                     {onCopy && (
-                        <Button variant="ghost" size="icon" onClick={onCopy} title="Copy All SQL">
+                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onCopy} title="Copy All SQL">
                             <Copy className="h-4 w-4" />
                         </Button>
                     )}
                     {onRegenerate && (
-                        <Button variant="ghost" size="icon" onClick={onRegenerate} title="Regenerate Test Cases">
+                        <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onRegenerate} title="Regenerate Test Cases">
                             <div className="h-4 w-4 rotate-0 hover:rotate-180 transition-transform duration-500">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg>
                             </div>
@@ -324,7 +342,7 @@ export function TestComparisonStep({
                     {onExportResults && (
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" title="Export Options">
+                                <Button variant="ghost" size="icon" className="h-9 w-9" title="Export Options">
                                     <Download className="h-4 w-4" />
                                 </Button>
                             </DropdownMenuTrigger>
@@ -343,36 +361,37 @@ export function TestComparisonStep({
                             </DropdownMenuContent>
                         </DropdownMenu>
                     )}
+                    </div>
                 </div>
             </div>
 
             {/* Test Case List */}
             <div className="grid grid-cols-1 gap-4">
-                {filteredTestCases?.map((tc, idx) => (
-                    <Card key={idx} className="group hover:shadow-md transition-shadow border-l-4 border-l-transparent hover:border-l-primary/50">
-                        <CardHeader className="py-3 px-4 flex flex-row items-start justify-between space-y-0">
+                {paginatedTestCases?.map(({ tc, index: realIndex }) => (
+                    <Card key={`${tc.name}-${realIndex}`} className="group border-border/80 transition-shadow hover:shadow-md">
+                        <CardHeader className="flex flex-row items-start justify-between space-y-0 border-b bg-muted/10 px-4 py-3">
                             <div className="flex items-start gap-3 flex-1">
                                 <Checkbox
-                                    checked={selectedTests.includes(idx)}
+                                    checked={selectedTests.includes(realIndex)}
                                     onCheckedChange={(checked) => {
                                         if (checked) {
-                                            setSelectedTests([...selectedTests, idx]);
+                                            setSelectedTests([...selectedTests, realIndex]);
                                         } else {
-                                            setSelectedTests(selectedTests.filter(i => i !== idx));
+                                            setSelectedTests(selectedTests.filter(i => i !== realIndex));
                                         }
                                     }}
                                     className="mt-1"
                                 />
                                 <div className="flex flex-col gap-1 flex-1">
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-semibold text-lg">{tc.name}</span>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-base font-semibold">{tc.name}</span>
                                         {getCategoryBadge(tc.category)}
                                         <Badge variant="outline" className={`text-xs gap-1 border-dashed ${tc.severity === 'critical' ? 'text-red-600 border-red-200 bg-red-50' : 'text-muted-foreground'}`}>
                                             {getSeverityIcon(tc.severity)}
                                             {tc.severity || 'minor'}
                                         </Badge>
                                     </div>
-                                    <CardDescription className="line-clamp-1 text-xs">
+                                    <CardDescription className="text-xs">
                                         {tc.description}
                                     </CardDescription>
                                 </div>
@@ -392,11 +411,11 @@ export function TestComparisonStep({
                                 <Button size="sm" variant="ghost" className="h-8 w-8 text-blue-600 hover:text-blue-700 hover:bg-blue-50" onClick={() => onQueryCreate(tc)} title="View SQL">
                                     <FileCode className="h-4 w-4" />
                                 </Button>
-                                <Button size="sm" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => handleEditClick(idx, tc)} title="Edit">
+                                <Button size="sm" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => handleEditClick(realIndex, tc)} title="Edit">
                                     <Edit className="h-4 w-4" />
                                 </Button>
                                 {onDeleteTestCase && (
-                                    <Button size="sm" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-red-600 hover:bg-red-50" onClick={() => onDeleteTestCase(idx)} title="Delete">
+                                    <Button size="sm" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-red-600 hover:bg-red-50" onClick={() => onDeleteTestCase(realIndex)} title="Delete">
                                         <Trash2 className="h-4 w-4" />
                                     </Button>
                                 )}
@@ -435,7 +454,7 @@ export function TestComparisonStep({
                                 </div>
                             )}
 
-                            <div className="grid grid-cols-1 gap-4 text-sm mt-2">
+                            <div className="mt-2 grid grid-cols-1 gap-4 text-sm">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="p-3 bg-blue-50/40 rounded-md border border-dashed border-blue-200">
                                         <span className="text-xs font-semibold text-blue-700 uppercase flex items-center gap-1 mb-1">
@@ -468,7 +487,7 @@ export function TestComparisonStep({
                                             <FileCode className="h-3 w-3" /> Actual Result
                                         </span>
                                         <div className="flex items-center justify-between gap-2">
-                                            <p className={`line-clamp-2 text-xs flex-1 ${tc.lastRunResult ? 'text-foreground font-medium' : 'text-muted-foreground italic'}`}>
+                                            <p className={`flex-1 whitespace-pre-wrap text-xs ${tc.lastRunResult ? 'font-medium text-foreground' : 'italic text-muted-foreground'}`}>
                                                 {tc.lastRunResult ? tc.lastRunResult.message : 'Not executed yet'}
                                             </p>
                                             {tc.lastRunResult?.details?.mismatchData && tc.lastRunResult.details.mismatchData.length > 0 && (
@@ -517,6 +536,51 @@ export function TestComparisonStep({
                     </Card>
                 ))}
             </div>
+
+            {filteredTestCases.length > 0 && (
+                <div className="flex flex-col gap-2 rounded-lg border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-xs text-muted-foreground">
+                        Showing {(currentPage - 1) * itemsPerPage + 1}
+                        {' - '}
+                        {Math.min(currentPage * itemsPerPage, filteredTestCases.length)}
+                        {' of '}
+                        {filteredTestCases.length}
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Select value={String(itemsPerPage)} onValueChange={(value) => setItemsPerPage(Number(value))}>
+                            <SelectTrigger className="h-8 w-[108px]">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="8">8 / page</SelectItem>
+                                <SelectItem value="16">16 / page</SelectItem>
+                                <SelectItem value="24">24 / page</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2"
+                            disabled={currentPage <= 1}
+                            onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                        >
+                            Prev
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                            {currentPage}/{totalPages}
+                        </span>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-2"
+                            disabled={currentPage >= totalPages}
+                            onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                        >
+                            Next
+                        </Button>
+                    </div>
+                </div>
+            )}
 
             {/* Add/Edit Modal */}
             <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
@@ -626,3 +690,4 @@ export function TestComparisonStep({
         </div>
     );
 }
+
