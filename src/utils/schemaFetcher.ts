@@ -1,5 +1,6 @@
 // Database Schema Fetcher
 // Fetches and caches database schemas for intelligent SQL generation
+import { connectionsApi } from '@/lib/api';
 
 export interface ColumnInfo {
     name: string;
@@ -29,7 +30,7 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 /**
  * Fetch database schema from backend API
  */
-export async function fetchDatabaseSchema(connectionId: string): Promise<DatabaseSchema> {
+export async function fetchDatabaseSchema(connectionId: string, agentId?: string): Promise<DatabaseSchema> {
     // Check cache first
     const cached = schemaCache.get(connectionId);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
@@ -39,19 +40,65 @@ export async function fetchDatabaseSchema(connectionId: string): Promise<Databas
 
     try {
         console.log('Fetching schema for connection', connectionId);
-        const response = await fetch(`/api/schema/${connectionId}`);
-
-        if (!response.ok) {
-            throw new Error(`Failed to fetch schema: ${response.statusText}`);
+        const { data, error } = await connectionsApi.metadata(connectionId, agentId);
+        if (error) {
+            throw new Error(`Failed to fetch schema: ${error}`);
         }
 
-        const result = await response.json();
-
-        if (!result.success || !result.data) {
-            throw new Error('Invalid schema response from server');
+        let metadata: any = data;
+        if (data?.jobId) {
+            const jobId = data.jobId as string;
+            const timeoutMs = 60000;
+            const start = Date.now();
+            while (Date.now() - start < timeoutMs) {
+                await new Promise((r) => setTimeout(r, 1500));
+                const { data: job, error: jobError } = await connectionsApi.getJob(jobId);
+                if (jobError || !job) continue;
+                if ((job as any).status === 'completed') {
+                    metadata = (job as any).result || {};
+                    break;
+                }
+                if ((job as any).status === 'failed') {
+                    throw new Error((job as any).error_log || 'Metadata job failed');
+                }
+            }
         }
 
-        const schema: DatabaseSchema = result.data;
+        if (!metadata?.databases || !Array.isArray(metadata.databases)) {
+            throw new Error('Invalid schema response from metadata API');
+        }
+
+        const tables: TableInfo[] = [];
+        let totalColumns = 0;
+
+        for (const db of metadata.databases) {
+            for (const schemaItem of (db.schemas || [])) {
+                for (const table of (schemaItem.tables || [])) {
+                    const columns: ColumnInfo[] = (table.columns || []).map((col: any) => ({
+                        name: col.name,
+                        dataType: col.type || col.dataType || 'unknown',
+                        isNullable: Boolean(col.nullable ?? col.isNullable),
+                        maxLength: col.maxLength,
+                    }));
+                    totalColumns += columns.length;
+                    tables.push({
+                        schema: schemaItem.name || 'dbo',
+                        tableName: table.name,
+                        fullName: `${schemaItem.name || 'dbo'}.${table.name}`,
+                        columns,
+                        primaryKey: (table.columns || [])
+                            .filter((c: any) => c.isPrimaryKey)
+                            .map((c: any) => c.name),
+                    });
+                }
+            }
+        }
+
+        const schema: DatabaseSchema = {
+            tables,
+            totalTables: tables.length,
+            totalColumns,
+        };
 
         // Cache the result
         schemaCache.set(connectionId, {

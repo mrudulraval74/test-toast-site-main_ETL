@@ -38,13 +38,60 @@ Deno.serve(async (req) => {
                     });
                 }
 
+                const sourceConnectionId = body.sourceConnectionId ?? body.source_connection_id;
+                const targetConnectionId = body.targetConnectionId ?? body.target_connection_id;
+                const agentId = body.agentId ?? body.agent_id;
+
+                let projectId = body.projectId ?? body.project_id;
+                if (!projectId && agentId) {
+                    const { data: agentProject, error: agentProjectError } = await supabase
+                        .from('self_hosted_agents')
+                        .select('project_id')
+                        .eq('id', agentId)
+                        .single();
+                    if (!agentProjectError && agentProject?.project_id) {
+                        projectId = agentProject.project_id;
+                    }
+                }
+
+                if (!projectId) {
+                    throw new Error('Missing projectId (or agent with project_id) for comparison job.');
+                }
+
+                let sourceConnection = body.sourceConnection;
+                let targetConnection = body.targetConnection;
+                if (!sourceConnection && sourceConnectionId) {
+                    const { data: srcConn, error: srcConnError } = await supabase
+                        .from('connections')
+                        .select('*')
+                        .eq('id', sourceConnectionId)
+                        .single();
+                    if (!srcConnError && srcConn) {
+                        sourceConnection = srcConn;
+                    }
+                }
+                if (!targetConnection && targetConnectionId) {
+                    const { data: tgtConn, error: tgtConnError } = await supabase
+                        .from('connections')
+                        .select('*')
+                        .eq('id', targetConnectionId)
+                        .single();
+                    if (!tgtConnError && tgtConn) {
+                        targetConnection = tgtConn;
+                    }
+                }
+
+                const sourceQuery = body.sourceQuery ?? body.source_query ?? body.test_case?.sourceSQL ?? body.testCase?.sourceSQL;
+                const targetQuery = body.targetQuery ?? body.target_query ?? body.test_case?.targetSQL ?? body.testCase?.targetSQL;
+
                 console.log(`Creating job ${jobId} for user ${createdBy}`);
 
                 // Create job in queue for agent to pick up
                 const { error: jobError } = await supabase.from('agent_job_queue').insert({
                     id: jobId,
-                    project_id: body.projectId,
+                    project_id: projectId,
                     created_by: createdBy,
+                    agent_id: agentId ?? null,
                     job_type: 'etl_comparison',
                     status: 'pending',
                     base_url: body.base_url ?? body.baseUrl ?? 'N/A',
@@ -52,13 +99,14 @@ Deno.serve(async (req) => {
                     run_id: `ETLCOMP-${jobId}`,
                     payload: {
                         compareId,
-                        sourceConnection: body.sourceConnection,
-                        targetConnection: body.targetConnection,
-                        sourceQuery: body.sourceQuery,
-                        targetQuery: body.targetQuery,
-                        keyColumns: body.keyColumns,
-                        sourceConnectionId: body.sourceConnectionId,
-                        targetConnectionId: body.targetConnectionId,
+                        sourceConnection,
+                        targetConnection,
+                        sourceQuery,
+                        targetQuery,
+                        keyColumns: body.keyColumns ?? body.key_columns ?? [],
+                        sourceConnectionId,
+                        targetConnectionId,
+                        testCase: body.test_case ?? body.testCase ?? null,
                     },
                 });
 
@@ -70,10 +118,10 @@ Deno.serve(async (req) => {
                     job_id: jobId,
                     status: 'pending',
                     progress: 0,
-                    source_connection_id: body.sourceConnectionId,
-                    target_connection_id: body.targetConnectionId,
-                    source_query: body.sourceQuery,
-                    target_query: body.targetQuery,
+                    source_connection_id: sourceConnectionId,
+                    target_connection_id: targetConnectionId,
+                    source_query: sourceQuery,
+                    target_query: targetQuery,
                 });
 
                 console.log('Job created successfully:', jobId);

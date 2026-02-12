@@ -466,7 +466,7 @@ export default function AIComparison() {
                     if (conn?.id) {
                         try {
                             const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                            const schema = await fetchDatabaseSchema(conn.id);
+                            const schema = await fetchDatabaseSchema(conn.id, selectedAgentId || undefined);
                             if (schema) sourceSchemas.push(schema);
                         } catch (e) { console.warn(`Source schema fetch failed for ${conn.name}`, e); }
                     }
@@ -474,14 +474,14 @@ export default function AIComparison() {
             } else if (sourceConnections[0]?.id) {
                 try {
                     const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                    const schema = await fetchDatabaseSchema(sourceConnections[0].id);
+                    const schema = await fetchDatabaseSchema(sourceConnections[0].id, selectedAgentId || undefined);
                     if (schema) sourceSchemas.push(schema);
                 } catch (e) { console.warn('Source schema fetch failed', e); }
             }
             if (targetConnection?.id) {
                 try {
                     const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                    targetSchema = await fetchDatabaseSchema(targetConnection.id);
+                    targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
                 } catch (e) { console.warn('Target schema fetch failed', e); }
             }
 
@@ -581,19 +581,19 @@ export default function AIComparison() {
                 for (const conn of sourceConnections) {
                     if (conn?.id) {
                         const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                        const schema = await fetchDatabaseSchema(conn.id);
+                        const schema = await fetchDatabaseSchema(conn.id, selectedAgentId || undefined);
                         if (schema) sourceSchemas.push(schema);
                     }
                 }
             } else if (sourceConnections[0]?.id) {
                 const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                const schema = await fetchDatabaseSchema(sourceConnections[0].id);
+                const schema = await fetchDatabaseSchema(sourceConnections[0].id, selectedAgentId || undefined);
                 if (schema) sourceSchemas.push(schema);
             }
 
             if (targetConnection?.id) {
                 const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                targetSchema = await fetchDatabaseSchema(targetConnection.id);
+                targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
             }
 
             const selectedSheets = sheets.filter(s => selectedSheetNames.includes(s.name));
@@ -736,10 +736,16 @@ export default function AIComparison() {
         try {
             // 1. Submit Job to Agent
             const config = {
-                agent_id: selectedAgentId,
-                source_connection_id: multiSourceMode ? sourceConnections[0].id : sourceConnections[0].id, // TODO: Handle multi-source properly in agent
-                target_connection_id: targetConnection.id,
-                test_case: testCase
+                projectId: projectId || undefined,
+                agentId: selectedAgentId,
+                sourceConnectionId: multiSourceMode ? sourceConnections[0].id : sourceConnections[0].id, // TODO: Handle multi-source properly in agent
+                targetConnectionId: targetConnection.id,
+                sourceConnection: multiSourceMode ? sourceConnections[0] : sourceConnections[0],
+                targetConnection: targetConnection,
+                sourceQuery: testCase.sourceSQL,
+                targetQuery: testCase.targetSQL,
+                keyColumns: [],
+                testCase,
             };
 
             const { data: job, error: jobError } = await compareApi.run(config);
@@ -882,8 +888,8 @@ export default function AIComparison() {
                 success: true
             };
 
-            let sourceMetas: any[] = [];
-            let targetMeta: any = null;
+            let sourceSchemas: any[] = [];
+            let targetSchema: any = null;
 
             const activeSources = multiSourceMode
                 ? sourceConnections.filter(c => c.id)
@@ -891,9 +897,10 @@ export default function AIComparison() {
 
             for (const src of activeSources) {
                 try {
-                    const resp = await connectionsApi.metadata(src.id);
-                    sourceMetas.push(resp.data);
-                    console.log(`✅ Fetched metadata for ${src.name}:`, (resp.data as any)?.databases?.length || 0, 'databases');
+                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
+                    const schema = await fetchDatabaseSchema(src.id, selectedAgentId || undefined);
+                    sourceSchemas.push(schema);
+                    console.log(`✅ Fetched schema for ${src.name}:`, schema?.totalTables || 0, 'tables');
                 } catch (e) {
                     const errorMsg = `Failed to fetch metadata for source: ${src.name}`;
                     results.warnings.push(errorMsg);
@@ -901,15 +908,15 @@ export default function AIComparison() {
                 }
             }
 
-            if (sourceMetas.length === 0 && (multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id)) {
+            if (sourceSchemas.length === 0 && (multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id)) {
                 results.warnings.push('Selected source connection(s) could not retrieve metadata');
             }
 
             if (targetConnection) {
                 try {
-                    const resp = await connectionsApi.metadata(targetConnection.id);
-                    targetMeta = resp.data;
-                    console.log('✅ Fetched target metadata:', (targetMeta as any)?.databases?.length || 0, 'databases');
+                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
+                    targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
+                    console.log('✅ Fetched target schema:', targetSchema?.totalTables || 0, 'tables');
                 } catch (e) {
                     const errorMsg = `Failed to fetch metadata for target: ${targetConnection.name}`;
                     results.warnings.push(errorMsg);
@@ -919,19 +926,22 @@ export default function AIComparison() {
                 results.warnings.push('No target connection selected - skipping target validation');
             }
 
-            const findTable = (meta: any, tableName: string) => {
-                if (!meta || !(meta as any).databases) return null;
+            const findTable = (schemaData: any, tableName: string) => {
+                if (!schemaData || !Array.isArray(schemaData.tables)) return null;
                 const cleanName = tableName.replace(/[\[\]]/g, '');
                 const parts = cleanName.split('.');
                 const tableBase = parts.length > 1 ? parts[1] : parts[0];
                 const schemaBase = parts.length > 1 ? parts[0] : null;
 
-                for (const db of ((meta as any).databases as any[])) {
-                    for (const schema of (db.schemas as any[])) {
-                        if (!schemaBase || schema.name.toLowerCase() === schemaBase.toLowerCase()) {
-                            for (const table of (schema.tables as any[])) {
-                                if (table.name.toLowerCase() === tableBase.toLowerCase()) return table;
-                            }
+                for (const table of (schemaData.tables as any[])) {
+                    const schemaName = (table.schema || '').toLowerCase();
+                    const tableNameLower = (table.tableName || table.name || '').toLowerCase();
+                    if (tableNameLower === tableBase.toLowerCase()) {
+                        if (!schemaBase || schemaName === schemaBase.toLowerCase()) {
+                            return {
+                                name: table.tableName || table.name,
+                                columns: table.columns || [],
+                            };
                         }
                     }
                 }
@@ -961,15 +971,15 @@ export default function AIComparison() {
                     mapping.sourceColumn &&
                     mapping.sourceColumn !== 'Unknown';
 
-                if (sourceMetas.length > 0 && hasValidSourceData) {
+                if (sourceSchemas.length > 0 && hasValidSourceData) {
                     const tableKey = mapping.sourceTable;
                     const stats = getTableStats(sourceMatches, tableKey);
                     stats.total.add(mapping.sourceColumn);
 
                     // Try to find in any of the available source metadata
                     let tableFound = false;
-                    for (const meta of sourceMetas) {
-                        const table = findTable(meta, tableKey);
+                    for (const schemaData of sourceSchemas) {
+                        const table = findTable(schemaData, tableKey);
                         if (table) {
                             tableFound = true;
                             stats.tableFound = true;
@@ -991,7 +1001,7 @@ export default function AIComparison() {
                             results.sourceErrors.push(`Column '${mapping.sourceColumn}' not found in '${tableKey}'.`);
                         }
                     }
-                } else if (sourceMetas.length > 0) {
+                } else if (sourceSchemas.length > 0) {
                     skippedMappings.source++;
                 }
 
@@ -1005,11 +1015,11 @@ export default function AIComparison() {
                     mapping.targetColumn &&
                     mapping.targetColumn !== 'Unknown';
 
-                if (targetMeta && hasValidTargetData) {
+                if (targetSchema && hasValidTargetData) {
                     const tableKey = mapping.targetTable;
                     const stats = getTableStats(targetMatches, tableKey);
                     stats.total.add(mapping.targetColumn);
-                    const table = findTable(targetMeta, tableKey);
+                    const table = findTable(targetSchema, tableKey);
 
                     if (!table) {
                         if (!processedTargetTables.has(tableKey)) {
@@ -1022,7 +1032,7 @@ export default function AIComparison() {
                         if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.name}'.`);
                         else stats.found.add(mapping.targetColumn);
                     }
-                } else if (targetMeta) {
+                } else if (targetSchema) {
                     skippedMappings.target++;
                 }
             }
