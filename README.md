@@ -4,6 +4,11 @@
 
 **URL**: https://lovable.dev/projects/89f59edf-b978-4423-85bf-80b8c91e6088
 
+## ETL agent source of truth
+
+ETL agent package files are maintained in `public/etl-agent/`.
+The app download flow in `src/components/AgentManagement.tsx` serves ETL files from `/etl-agent/*` (public assets).
+
 ## How can I edit this code?
 
 There are several ways of editing your application.

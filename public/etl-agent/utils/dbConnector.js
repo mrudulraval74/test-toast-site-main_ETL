@@ -76,12 +76,21 @@ async function executeMySQLQuery(config, query) {
 async function executeMSSQLQuery(config, query) {
     let server = config.host;
     let instanceName = config.instance;
+    const parsedPort = config.port ? parseInt(config.port, 10) : undefined;
+    const hasExplicitPort = Number.isInteger(parsedPort) && parsedPort > 0;
 
-    // Handle "hostname\instance" format
+    // Handle "hostname\instance" format only when no explicit port is provided.
+    // If port is explicitly provided, prefer host:port to avoid routing to the wrong SQL instance.
     if (server && server.includes('\\')) {
         const parts = server.split('\\');
         server = parts[0];
-        instanceName = parts[1];
+        if (!hasExplicitPort) {
+            instanceName = parts[1];
+        }
+    }
+
+    if (hasExplicitPort) {
+        instanceName = undefined;
     }
 
     const mssqlConfig = {
@@ -107,14 +116,8 @@ async function executeMSSQLQuery(config, query) {
         mssqlConfig.password = config.password;
     }
 
-    // Only add port if NO instance name is provided, or if it's explicitly non-default? 
-    // Actually, usually if instance is present, we omit port to let SQL Browser find it.
-    // However, if the user explicitly set a port, we might want to keep it?
-    // Let's safe-guard: If instance is present, we generally rely on it.
-    // But if 'port' is in config and it's NOT 1433 (default), we might trust it.
-    // For now, let's keep it simple: if parsed instance, omit port.
-    if (!instanceName && config.port) {
-        mssqlConfig.port = parseInt(config.port);
+    if (!instanceName && hasExplicitPort) {
+        mssqlConfig.port = parsedPort;
     }
 
     const pool = new sql.ConnectionPool(mssqlConfig);

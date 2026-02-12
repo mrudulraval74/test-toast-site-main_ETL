@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Deprecated local ETL agent prototype (canonical source is public/etl-agent)
+etl-agent/
