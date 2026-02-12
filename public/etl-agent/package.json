@@ -4,8 +4,12 @@
     "description": "ETL Comparison Agent for Data Sentinel AI",
     "main": "agent.js",
     "scripts": {
+        "prestart": "node -e \"try{require.resolve('msnodesqlv8');}catch(e){console.error('Missing dependency: msnodesqlv8. Run: npm run install:windows-auth');process.exit(1)}\"",
         "start": "node agent.js",
-        "dev": "nodemon agent.js"
+        "predev": "node -e \"try{require.resolve('msnodesqlv8');}catch(e){console.error('Missing dependency: msnodesqlv8. Run: npm run install:windows-auth');process.exit(1)}\"",
+        "dev": "nodemon agent.js",
+        "install:windows-auth": "npm install msnodesqlv8 --save-optional",
+        "postinstall": "node -e \"if(process.platform==='win32'){try{require.resolve('msnodesqlv8');console.log('msnodesqlv8 is ready for Windows Authentication.');}catch(e){console.warn('Windows Authentication dependency not installed. Run: npm run install:windows-auth');}}\""
     },
     "keywords": [
         "etl",
@@ -20,7 +24,9 @@
         "dotenv": "^16.3.1",
         "pg": "^8.11.3",
         "mysql2": "^3.6.5",
-        "mssql": "^10.0.1",
+        "mssql": "^10.0.1"
+    },
+    "optionalDependencies": {
         "msnodesqlv8": "^3.0.0"
     },
     "devDependencies": {

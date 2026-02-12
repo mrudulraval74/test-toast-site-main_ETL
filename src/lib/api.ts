@@ -48,19 +48,18 @@ export const connectionsApi = {
   },
 
   save: async (config: any) => {
-    // Direct upsert to 'connections' table
-    const { id, ...payload } = config;
-    const operation = id
-      ? supabase.from('connections' as any).update(payload).eq('id', id)
-      : supabase.from('connections' as any).insert([payload]);
-
-    const { data, error } = await operation.select().single();
-
-    if (error) {
-      console.error("Save error:", error);
-      return { data: null, error: error.message };
+    try {
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${ETL_API_BASE_URL}/connections/save`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(config),
+      });
+      const data = await response.json();
+      return { data: response.ok ? data : null, error: response.ok ? null : (data.error || "Failed to save connection") };
+    } catch (e) {
+      return { data: null, error: e instanceof Error ? e.message : 'Network error' };
     }
-    return { data, error: null };
   },
 
   list: async () => {
@@ -104,13 +103,29 @@ export const connectionsApi = {
     }
   },
 
-  getMetadata: async (id: string) => {
+  getMetadata: async (id: string, agentId?: string) => {
     try {
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${ETL_API_BASE_URL}/connections/${id}/metadata`, {
-        method: 'POST',
-        headers: headers,
+      if (agentId) {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${ETL_API_BASE_URL}/connections/${id}/metadata`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ agentId }),
+        });
+        const data = await response.json();
+        return { data: response.ok ? data : null, error: response.ok ? null : (data.error || 'Failed to fetch metadata') };
+      }
+
+      let response = await fetch(`${ETL_API_BASE_URL}/connections/${id}/metadata`, {
+        method: 'GET',
       });
+      if (!response.ok && (response.status === 404 || response.status === 405)) {
+        const headers = await getAuthHeaders();
+        response = await fetch(`${ETL_API_BASE_URL}/connections/${id}/metadata`, {
+          method: 'POST',
+          headers,
+        });
+      }
       const data = await response.json();
       return { data: response.ok ? data : null, error: response.ok ? null : (data.error || 'Failed to fetch metadata') };
     } catch (e) {
@@ -118,9 +133,9 @@ export const connectionsApi = {
     }
   },
 
-  metadata: async (id: string) => {
+  metadata: async (id: string, agentId?: string) => {
     // Alias for getMetadata
-    return connectionsApi.getMetadata(id);
+    return connectionsApi.getMetadata(id, agentId);
   },
 
 
@@ -134,12 +149,18 @@ export const connectionsApi = {
   },
 
   update: async (id: string, config: any) => {
-    const { error } = await supabase
-      .from('connections' as any)
-      .update(config)
-      .eq('id', id);
-    if (error) return { data: null, error: error.message };
-    return { data: { id, success: true }, error: null };
+    try {
+      const headers = await getAuthHeaders();
+      const response = await fetch(`${ETL_API_BASE_URL}/connections/${id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(config),
+      });
+      const data = await response.json();
+      return { data: response.ok ? data : null, error: response.ok ? null : (data.error || "Failed to update connection") };
+    } catch (e) {
+      return { data: null, error: e instanceof Error ? e.message : 'Network error' };
+    }
   }
 };
 
@@ -208,9 +229,10 @@ export const queriesApi = {
   },
   preview: async (data: any) => {
     try {
+      const headers = await getAuthHeaders();
       const response = await fetch(`${ETL_API_BASE_URL}/queries/preview`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers,
         body: JSON.stringify(data),
       });
       const result = await response.json();
@@ -224,9 +246,10 @@ export const queriesApi = {
 export const compareApi = {
   run: async (config: any) => {
     try {
+      const headers = await getAuthHeaders();
       const response = await fetch(`${ETL_API_BASE_URL}/compare/run`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers,
         body: JSON.stringify(config),
       });
       const data = await response.json();
@@ -238,8 +261,9 @@ export const compareApi = {
   status: async (runId: string) => {
     // ETL status is checked via reports table in etl-agent-api or direct DB
     try {
+      const headers = await getAuthHeaders();
       const response = await fetch(`${ETL_API_BASE_URL}/reports/${runId}`, {
-        headers: getAuthHeaders()
+        headers
       });
       const data = await response.json();
       return { data, error: response.ok ? null : (data.error || 'Failed to fetch status') };
@@ -249,8 +273,9 @@ export const compareApi = {
   },
   results: async (runId: string) => {
     try {
+      const headers = await getAuthHeaders();
       const response = await fetch(`${ETL_API_BASE_URL}/reports/${runId}`, {
-        headers: getAuthHeaders()
+        headers
       });
       const data = await response.json();
       return { data, error: response.ok ? null : (data.error || 'Failed to fetch results') };
@@ -260,8 +285,9 @@ export const compareApi = {
   },
   report: async (runId: string) => {
     try {
+      const headers = await getAuthHeaders();
       const response = await fetch(`${ETL_API_BASE_URL}/reports/${runId}/download`, {
-        headers: getAuthHeaders()
+        headers
       });
       if (!response.ok) throw new Error('Failed to download report');
       const blob = await response.blob();

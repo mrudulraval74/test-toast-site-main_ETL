@@ -151,7 +151,7 @@ Deno.serve(async (req) => {
         if (connectionUpdateMatch && req.method === 'DELETE') return await handleConnectionDelete(req, connectionUpdateMatch[1]);
 
         const metadataMatch = path.match(/^\/connections\/([^/]+)\/metadata$/);
-        if (metadataMatch && req.method === 'POST') return await handleGetMetadata(req, metadataMatch[1]);
+        if (metadataMatch && (req.method === 'POST' || req.method === 'GET')) return await handleGetMetadata(req, metadataMatch[1]);
 
         // Queries
         if (path === '/queries/saved' && req.method === 'GET') {

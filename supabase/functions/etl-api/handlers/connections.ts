@@ -44,6 +44,70 @@ export async function handleGetMetadata(req: Request, connectionId: string): Pro
         throw new Error('Connection not found');
     }
 
+    let agentId: string | null = null;
+    try {
+        const url = new URL(req.url);
+        agentId = url.searchParams.get('agentId');
+    } catch (_e) {
+        agentId = null;
+    }
+
+    if (!agentId && req.method === 'POST') {
+        try {
+            const body = await req.json();
+            if (body?.agentId && typeof body.agentId === 'string') {
+                agentId = body.agentId;
+            }
+        } catch (_e) {
+            // No body or invalid JSON; fall back to direct mode.
+        }
+    }
+
+    if (agentId) {
+        const createdBy = await getUserIdFromRequest(req);
+        if (!createdBy) {
+            return new Response(JSON.stringify({ error: 'Unauthorized: Missing user context' }), {
+                status: 401,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+        }
+
+        const { data: agent, error: agentError } = await supabase
+            .from('self_hosted_agents')
+            .select('project_id')
+            .eq('id', agentId)
+            .single();
+
+        if (agentError || !agent) {
+            return new Response(JSON.stringify({ error: 'Agent not found' }), {
+                status: 404,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+        }
+
+        const jobId = crypto.randomUUID();
+        const { error: insertError } = await supabase.from('agent_job_queue').insert({
+            id: jobId,
+            project_id: agent.project_id,
+            created_by: createdBy,
+            agent_id: agentId,
+            job_type: 'fetch_metadata',
+            status: 'pending',
+            base_url: 'N/A',
+            steps: [],
+            run_id: `METADATA-${jobId}`,
+            payload: { connection: conn, connectionId }
+        });
+
+        if (insertError) throw insertError;
+
+        return new Response(JSON.stringify({
+            success: true,
+            jobId,
+            message: 'Metadata fetch queued on agent'
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     try {
         let metadata;
         if (conn.type === 'postgresql' || conn.type === 'redshift') {
@@ -217,6 +281,10 @@ export async function handleConnectionSave(req: Request): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
     const body = normalizeSqlServerConnectionPayload(rawBody);
+    if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
+        // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
+        body.port = 1433;
+    }
     delete body.encrypt;
     const { data, error } = await supabase.from('connections').insert(body).select().single();
     if (error) throw error;
@@ -227,7 +295,15 @@ export async function handleConnectionUpdate(req: Request, connectionId: string)
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
     const body = normalizeSqlServerConnectionPayload(rawBody);
+    if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
+        // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
+        body.port = 1433;
+    }
     delete body.encrypt;
+    // Preserve existing stored password when UI submits an edit without changing password.
+    if (!body.password || String(body.password).trim() === '') {
+        delete body.password;
+    }
     const { data, error } = await supabase.from('connections').update(body).eq('id', connectionId).select().single();
     if (error) throw error;
     return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });

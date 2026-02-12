@@ -12,7 +12,7 @@ import { connectionsApi, API_BASE_URL } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { getValidationMessage, formatValidationMessage } from '@/lib/validationMessages';
 import { helpContent } from '@/lib/helpContent';
-import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, ChevronDown, ChevronUp, Eye, EyeOff } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Tooltip,
@@ -86,6 +86,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
   const [aiModalContent, setAiModalContent] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiAction, setAiAction] = useState<string | null>(null);
+  const [showSqlPassword, setShowSqlPassword] = useState(false);
 
   const [mssqlData, setMssqlData] = useState({
     name: '',
@@ -335,6 +336,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     setTestSuccess(false);
     setTestStatus('idle');
     setTestError(null);
+    setShowSqlPassword(false);
   };
 
   const handleAITroubleshoot = async (errorMessage: string) => {
@@ -405,9 +407,11 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
 
   const validateSqlServerAuthInput = (
     type: 'mssql' | 'azuresql',
-    data: typeof mssqlData
+    data: typeof mssqlData,
+    options?: { allowSavedPassword?: boolean }
   ) => {
     const trusted = type === 'mssql' ? !!data.trustedConnection : false;
+    const allowSavedPassword = !!options?.allowSavedPassword;
     if (!trusted && !data.username?.trim()) {
       toast({
         title: 'Validation Failed',
@@ -416,7 +420,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
       });
       return false;
     }
-    if (!trusted && !data.password) {
+    if (!trusted && !data.password && !allowSavedPassword) {
       toast({
         title: 'Validation Failed',
         description: 'Password is required when Windows Authentication is off.',
@@ -787,7 +791,11 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
 
     if (!useConnectionString && (dbType === 'mssql' || dbType === 'azuresql')) {
       const sqlData = dbType === 'mssql' ? mssqlData : azureSqlData;
-      if (!validateSqlServerAuthInput(dbType, sqlData)) {
+      const existingConn = editingConnectionId
+        ? savedConnections.find((conn: any) => conn.id === editingConnectionId)
+        : null;
+      const allowSavedPassword = !!editingConnectionId && !!existingConn?.password && !sqlData.password;
+      if (!validateSqlServerAuthInput(dbType, sqlData, { allowSavedPassword })) {
         return;
       }
     }
@@ -950,6 +958,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     setEditingConnectionId(conn.id);
     setShowNewForm(true);
     setDbType(conn.type);
+    setShowSqlPassword(false);
 
     if (conn.type === 'mssql') {
       setMssqlData({
@@ -960,7 +969,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         initialDatabase: conn.database || '',
         trustedConnection: conn.trusted || false,
         username: conn.username || '',
-        password: '', // Don't populate password for security
+        password: conn.password || '',
         ssl: conn.ssl || false,
       });
     } else if (conn.type === 'azuresql') {
@@ -972,7 +981,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         initialDatabase: conn.database || '',
         trustedConnection: false,
         username: conn.username || '',
-        password: '',
+        password: conn.password || '',
         ssl: true,
       });
       if (conn.trusted) {
@@ -1035,13 +1044,15 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
       return;
     }
 
+    let isPollingJob = false;
+    setConnectionId(connectionIdToFetch);
     setLoadingDatabases(true);
     setMetadataError(null);
     setFetchingStatus(null);
 
     try {
       console.log('Fetching databases for connection:', connectionIdToFetch);
-      const res = await connectionsApi.metadata(connectionIdToFetch);
+      const res = await connectionsApi.metadata(connectionIdToFetch, agentId);
 
       if (res.error) {
         setMetadataError(res.error);
@@ -1055,8 +1066,64 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
 
       const data = res.data;
 
+      if (data && data.jobId) {
+        isPollingJob = true;
+        setFetchingStatus('Agent is fetching database metadata...');
+        const jobId = data.jobId as string;
+        const startTime = Date.now();
+        const timeout = 60000;
+
+        const pollInterval = setInterval(async () => {
+          if (Date.now() - startTime > timeout) {
+            clearInterval(pollInterval);
+            setLoadingDatabases(false);
+            setFetchingStatus(null);
+            setMetadataError('Metadata fetch timed out');
+            toast({
+              title: 'Fetch Failed',
+              description: 'Agent did not return metadata in time.',
+              variant: 'destructive',
+            });
+            return;
+          }
+
+          const { data: job, error: jobError } = await connectionsApi.getJob(jobId) as any;
+          if (jobError || !job) return;
+
+          if (job.status === 'completed') {
+            clearInterval(pollInterval);
+            setFetchingStatus(null);
+            setLoadingDatabases(false);
+            const jobResult = job.result || {};
+            if (jobResult.databases) {
+              setConnectionId(connectionIdToFetch);
+              setDatabaseTree(jobResult.databases);
+              toast({
+                title: 'Databases Fetched',
+                description: 'Metadata retrieved successfully via agent.',
+              });
+            } else {
+              setMetadataError('No databases found in metadata response');
+            }
+          } else if (job.status === 'failed') {
+            clearInterval(pollInterval);
+            setFetchingStatus(null);
+            setLoadingDatabases(false);
+            const msg = job.error_log || 'Metadata fetch failed';
+            setMetadataError(msg);
+            toast({
+              title: 'Fetch Failed',
+              description: msg,
+              variant: 'destructive',
+            });
+          }
+        }, 2000);
+        return;
+      }
+
       // Handle Direct Sync Result
       if (data && data.databases) {
+        setConnectionId(connectionIdToFetch);
         setDatabaseTree(data.databases);
       } else {
         console.warn('Metadata response had no databases array:', data);
@@ -1071,8 +1138,8 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         variant: "destructive",
       });
     } finally {
-      // Only set loading to false if we're not polling
-      if (!fetchingStatus) {
+      // Only set loading to false if we're not polling job status.
+      if (!isPollingJob) {
         setLoadingDatabases(false);
       }
     }
@@ -1568,15 +1635,25 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                           </div>
                           <div>
                             <Label>Password</Label>
-                            <Input
-                              type="password"
-                              value={dbType === 'mssql' ? mssqlData.password : azureSqlData.password}
-                              onChange={(e) => dbType === 'mssql'
-                                ? setMssqlData({ ...mssqlData, password: e.target.value })
-                                : setAzureSqlData({ ...azureSqlData, password: e.target.value })
-                              }
-                              placeholder="••••••••"
-                            />
+                            <div className="flex gap-2">
+                              <Input
+                                type={showSqlPassword ? 'text' : 'password'}
+                                value={dbType === 'mssql' ? mssqlData.password : azureSqlData.password}
+                                onChange={(e) => dbType === 'mssql'
+                                  ? setMssqlData({ ...mssqlData, password: e.target.value })
+                                  : setAzureSqlData({ ...azureSqlData, password: e.target.value })
+                                }
+                                placeholder="*******"
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setShowSqlPassword(!showSqlPassword)}
+                                aria-label={showSqlPassword ? 'Hide password' : 'View password'}
+                              >
+                                {showSqlPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </Button>
+                            </div>
                           </div>
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">

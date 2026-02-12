@@ -28,7 +28,12 @@ A self-hosted agent for executing ETL data comparisons between databases.
    npm install
    ```
 
-3. **Configure environment**
+3. **Install Windows Authentication driver (mandatory)**
+   ```bash
+   npm run install:windows-auth
+   ```
+
+4. **Configure environment**
    
    The `.env` file has been pre-configured with your API key. You can modify settings if needed:
    
@@ -42,7 +47,7 @@ A self-hosted agent for executing ETL data comparisons between databases.
    PROJECT_ID=your-project-id
    ```
 
-4. **Start the agent**
+5. **Start the agent**
    ```bash
    npm start
    ```
@@ -106,6 +111,15 @@ Poll Interval: 5000ms
 - Check network access to database servers
 - Ensure database allows connections from agent's IP
 - Check SSL/TLS requirements
+
+### Windows Authentication (MSSQL) issues
+
+- Install native driver support:
+  ```bash
+  npm run install:windows-auth
+  ```
+- Install Microsoft ODBC Driver 17 or 18 for SQL Server on the agent machine.
+- If build tools are missing, install Visual Studio C++ Build Tools and retry.
 
 ### Jobs not appearing
 

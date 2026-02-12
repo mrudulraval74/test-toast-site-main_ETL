@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { executeComparison } = require('./utils/compareEngine');
-const { testConnection } = require('./utils/dbConnector');
+const { testConnection, fetchMetadata } = require('./utils/dbConnector');
 require('dotenv').config();
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:54321/functions/v1/etl-api';
@@ -102,6 +102,8 @@ async function processJob(job, agentId) {
             result = await executeETLComparison(payload);
         } else if (job.job_type === 'test_connection') {
             result = await executeTestConnection(payload);
+        } else if (job.job_type === 'fetch_metadata') {
+            result = await executeFetchMetadata(payload);
         } else {
             throw new Error(`Unknown job type: ${job.job_type}`);
         }
@@ -184,6 +186,16 @@ async function executeTestConnection(payload) {
         console.error('---------------------------------------------------');
     }
 
+    return result;
+}
+
+// Execute metadata fetch
+async function executeFetchMetadata(payload) {
+    const { connection } = payload;
+
+    console.log(`[Metadata] Fetching metadata for ${connection.type}://${connection.host}:${connection.port || ''}/${connection.database}`);
+    const result = await fetchMetadata(connection);
+    console.log(`[Metadata] Fetched ${result.databases?.length || 0} database(s)`);
     return result;
 }
 
