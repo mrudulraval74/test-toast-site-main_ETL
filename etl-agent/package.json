@@ -1,0 +1,25 @@
+{
+    "name": "etl-agent",
+    "version": "1.0.0",
+    "description": "Local agent for ETL connectivity",
+    "main": "agent.ts",
+    "scripts": {
+        "start": "ts-node agent.ts",
+        "register": "ts-node register.ts"
+    },
+    "dependencies": {
+        "axios": "^1.6.0",
+        "dotenv": "^16.3.0",
+        "pg": "^8.11.0",
+        "mysql2": "^3.6.0",
+        "mssql": "^10.0.0",
+        "chalk": "^4.1.2"
+    },
+    "devDependencies": {
+        "ts-node": "^10.9.1",
+        "typescript": "^5.2.0",
+        "@types/node": "^20.8.0",
+        "@types/pg": "^8.10.0",
+        "@types/mssql": "^8.1.0"
+    }
+}

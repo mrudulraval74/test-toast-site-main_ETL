@@ -55,11 +55,13 @@ export async function handleTestConnection(req: Request): Promise<Response> {
     if (agentId) {
         const createdBy = await getUserIdFromRequest(req);
         if (!createdBy) {
-            return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+            console.error('Unauthorized: No user ID resolved from request for connection test');
+            return new Response(JSON.stringify({ error: 'Unauthorized: Missing user context' }), {
                 status: 401,
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' }
             });
         }
+        console.log(`Initiating connection test job for user ${createdBy}`);
 
         console.log(`Creating test_connection job for agent ${agentId}`);
         const supabase = getSupabaseAdmin();

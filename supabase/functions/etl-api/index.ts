@@ -31,11 +31,14 @@ Deno.serve(async (req) => {
             try {
                 const createdBy = await getUserIdFromRequest(req);
                 if (!createdBy) {
-                    return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
+                    console.error('Unauthorized: No user ID resolved from request');
+                    return new Response(JSON.stringify({ success: false, error: 'Unauthorized: Missing user context' }), {
                         status: 401,
                         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
                     });
                 }
+
+                console.log(`Creating job ${jobId} for user ${createdBy}`);
 
                 // Create job in queue for agent to pick up
                 const { error: jobError } = await supabase.from('agent_job_queue').insert({
@@ -195,10 +198,27 @@ Deno.serve(async (req) => {
             const { data, error } = await supabase
                 .from('self_hosted_agents')
                 .select('id, agent_name, status, last_heartbeat, capacity, running_jobs')
-                .eq('status', 'online')
                 .order('agent_name', { ascending: true });
+
             if (error) throw error;
-            return new Response(JSON.stringify({ agents: data || [] }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+            // Compute actual status based on heartbeat freshness
+            const now = Date.now();
+            const disconnectThreshold = 2 * 60 * 1000; // 2 minutes
+
+            const agents = (data || []).map((agent: any) => {
+                const lastHeartbeat = agent.last_heartbeat ? new Date(agent.last_heartbeat).getTime() : 0;
+                const isAlive = (now - lastHeartbeat) < disconnectThreshold;
+
+                let computedStatus = 'offline';
+                if (isAlive) {
+                    computedStatus = agent.running_jobs > 0 ? 'busy' : 'online';
+                }
+
+                return { ...agent, status: computedStatus };
+            });
+
+            return new Response(JSON.stringify({ agents }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
         // Job Details

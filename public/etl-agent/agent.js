@@ -14,6 +14,9 @@ if (!AGENT_API_KEY) {
 }
 
 console.log(`ETL Agent starting...`);
+console.log(`---------------------------------------------------`);
+console.log(`---      PATCHED AGENT LOADED (v2)              ---`);
+console.log(`---------------------------------------------------`);
 console.log(`API Base URL: ${API_BASE_URL}`);
 console.log(`Poll Interval: ${POLL_INTERVAL}ms`);
 console.log(`Heartbeat Interval: ${HEARTBEAT_INTERVAL}ms`);
@@ -163,6 +166,11 @@ async function executeTestConnection(payload) {
     const result = await testConnection(connection);
 
     console.log(`[Test] Connection test ${result.success ? 'passed' : 'failed'}`);
+    if (!result.success) {
+        console.error('---------------------------------------------------');
+        console.error('[Test] CONNECTION FAILURE REASON:', result.error);
+        console.error('---------------------------------------------------');
+    }
 
     return result;
 }

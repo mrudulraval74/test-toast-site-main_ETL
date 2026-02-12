@@ -22,7 +22,12 @@ export async function getUserIdFromRequest(req: Request): Promise<string | null>
         return null;
     }
 
-    return data.user?.id ?? null;
+    if (!data.user?.id) {
+        console.error('[Auth] User object missing ID');
+        return null;
+    }
+
+    return data.user.id;
 }
 
 // Validate agent API key and return agent details
