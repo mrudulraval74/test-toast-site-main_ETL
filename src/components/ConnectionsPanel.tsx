@@ -372,6 +372,61 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     }
   };
 
+  const normalizeSqlServerPayload = (
+    type: 'mssql' | 'azuresql',
+    data: typeof mssqlData
+  ) => {
+    const trusted = type === 'azuresql' ? false : !!data.trustedConnection;
+    const username = trusted ? undefined : (data.username?.trim() || undefined);
+    const password = trusted ? undefined : (data.password || undefined);
+    const parsedPort = data.port ? parseInt(data.port, 10) : undefined;
+    const normalizedInstance = (data.instance && data.instance.trim()) || undefined;
+    let normalizedPort = Number.isFinite(parsedPort as number) ? parsedPort : undefined;
+
+    // For named MSSQL instances, default 1433 is often wrong (e.g., SQLEXPRESS dynamic ports).
+    // If user provided instance and left default 1433, prefer instance resolution via SQL Browser.
+    if (type === 'mssql' && normalizedInstance && normalizedPort === 1433) {
+      normalizedPort = undefined;
+    }
+
+    return {
+      type,
+      name: data.name,
+      host: data.host,
+      port: normalizedPort,
+      instance: normalizedInstance,
+      database: data.initialDatabase || undefined,
+      trusted,
+      username,
+      password,
+      ssl: data.ssl,
+    };
+  };
+
+  const validateSqlServerAuthInput = (
+    type: 'mssql' | 'azuresql',
+    data: typeof mssqlData
+  ) => {
+    const trusted = type === 'mssql' ? !!data.trustedConnection : false;
+    if (!trusted && !data.username?.trim()) {
+      toast({
+        title: 'Validation Failed',
+        description: 'Username is required when Windows Authentication is off.',
+        variant: 'destructive',
+      });
+      return false;
+    }
+    if (!trusted && !data.password) {
+      toast({
+        title: 'Validation Failed',
+        description: 'Password is required when Windows Authentication is off.',
+        variant: 'destructive',
+      });
+      return false;
+    }
+    return true;
+  };
+
   const handleTestConnection = async () => {
     if (useConnectionString) {
       if (!connectionString.trim()) {
@@ -438,6 +493,13 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         // Let's keep it simple: Basic empty checks are often mostly handled by the UI 'required' * 
         // but good to have safety here. 
       }
+
+      if (dbType === 'mssql' || dbType === 'azuresql') {
+        const sqlData = dbType === 'mssql' ? mssqlData : azureSqlData;
+        if (!validateSqlServerAuthInput(dbType, sqlData)) {
+          return;
+        }
+      }
     }
 
     setTesting(true);
@@ -480,17 +542,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         const data = dbType === 'mssql' ? mssqlData : azureSqlData;
         payload = {
           ...payload, // Preserve agentId
-          type: dbType,
-          name: data.name,
-          host: data.host,
-          port: data.port ? parseInt(data.port, 10) : undefined,
-          instance: (data.instance && data.instance.trim()) || undefined,
-          database: data.initialDatabase || undefined,
-          trusted: data.trustedConnection,
-          username: data.username || undefined,
-          password: data.password || undefined,
-          ssl: data.ssl,
-          encrypt: dbType === 'azuresql' ? true : data.ssl,
+          ...normalizeSqlServerPayload(dbType, data),
         };
       } else if (dbType === 'mysql') {
         payload = {
@@ -691,13 +743,21 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         port: conn.port?.toString() || '1433',
         instance: conn.instance || '',
         initialDatabase: conn.database || '',
-        trustedConnection: conn.trusted || false,
+        trustedConnection: conn.type === 'azuresql' ? false : (conn.trusted || false),
         username: conn.username || '',
         password: conn.password || '',
         ssl: conn.ssl || (conn.type === 'azuresql'),
       };
       if (conn.type === 'mssql') setMssqlData(data);
-      else setAzureSqlData(data);
+      else {
+        setAzureSqlData(data);
+        if (conn.trusted) {
+          toast({
+            title: 'Azure SQL Authentication Adjusted',
+            description: 'Windows Authentication is not supported for Azure SQL. Trusted Connection was turned off.',
+          });
+        }
+      }
     } else {
       setMysqlData({
         name: `${conn.name} - Copy`,
@@ -725,6 +785,13 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
       return;
     }
 
+    if (!useConnectionString && (dbType === 'mssql' || dbType === 'azuresql')) {
+      const sqlData = dbType === 'mssql' ? mssqlData : azureSqlData;
+      if (!validateSqlServerAuthInput(dbType, sqlData)) {
+        return;
+      }
+    }
+
     setSaving(true);
 
     let payload: any = { type: dbType };
@@ -750,18 +817,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     } else {
       if (dbType === 'mssql' || dbType === 'azuresql') {
         const data = dbType === 'mssql' ? mssqlData : azureSqlData;
-        payload = {
-          type: dbType,
-          name: data.name,
-          host: data.host,
-          port: data.port ? parseInt(data.port, 10) : undefined,
-          instance: (data.instance && data.instance.trim()) || null,
-          database: data.initialDatabase || null,
-          trusted: data.trustedConnection,
-          username: data.username || null,
-          password: data.password || null,
-          ssl: data.ssl
-        };
+        payload = normalizeSqlServerPayload(dbType, data);
       } else if (dbType === 'mysql') {
         payload = {
           type: 'mysql',
@@ -907,6 +963,24 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         password: '', // Don't populate password for security
         ssl: conn.ssl || false,
       });
+    } else if (conn.type === 'azuresql') {
+      setAzureSqlData({
+        name: conn.name || '',
+        host: conn.host || '',
+        port: conn.port?.toString() || '1433',
+        instance: conn.instance || '',
+        initialDatabase: conn.database || '',
+        trustedConnection: false,
+        username: conn.username || '',
+        password: '',
+        ssl: true,
+      });
+      if (conn.trusted) {
+        toast({
+          title: 'Azure SQL Authentication Adjusted',
+          description: 'Windows Authentication is not supported for Azure SQL. Trusted Connection was turned off.',
+        });
+      }
     } else {
       setMysqlData({
         name: conn.name || '',
@@ -946,14 +1020,28 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     setConnectionToDelete(null);
   };
 
-  const handleFetchDatabases = async (id: string) => {
+  const handleFetchDatabases = async (id: string | { id?: string }) => {
+    const connectionIdToFetch =
+      typeof id === 'string'
+        ? id
+        : (id && typeof id.id === 'string' ? id.id : '');
+
+    if (!connectionIdToFetch) {
+      toast({
+        title: "Invalid Connection",
+        description: "No valid connection id found to fetch metadata.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setLoadingDatabases(true);
     setMetadataError(null);
     setFetchingStatus(null);
 
     try {
-      console.log('Fetching databases for connection:', id);
-      const res = await connectionsApi.metadata(id);
+      console.log('Fetching databases for connection:', connectionIdToFetch);
+      const res = await connectionsApi.metadata(connectionIdToFetch);
 
       if (res.error) {
         setMetadataError(res.error);
@@ -1313,15 +1401,6 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="mssql">MS SQL Server</SelectItem>
-                    <SelectItem value="azuresql">Azure SQL Database</SelectItem>
-                    <SelectItem value="mysql">MySQL</SelectItem>
-                    <SelectItem value="postgresql">PostgreSQL</SelectItem>
-                    <SelectItem value="oracle">Oracle Database</SelectItem>
-                    <SelectItem value="databricks">Databricks</SelectItem>
-                    <SelectItem value="snowflake">Snowflake</SelectItem>
-                    <SelectItem value="redshift">Amazon Redshift</SelectItem>
-                    <SelectItem value="mariadb">MariaDB</SelectItem>
-                    <SelectItem value="sqlite">SQLite</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1409,7 +1488,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                         </div>
                         <div>
                           <div className="flex items-center gap-2 mb-2">
-                            <Label>Port <span className="text-destructive">*</span></Label>
+                            <Label>Port {dbType === 'azuresql' ? <span className="text-destructive">*</span> : null}</Label>
                             <HelpTooltip content="Database port (default: 1433 for MSSQL)" />
                           </div>
                           <Input
@@ -1419,13 +1498,13 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                               : setAzureSqlData({ ...azureSqlData, port: e.target.value })
                             }
                             placeholder="1433"
-                            required
+                            required={dbType === 'azuresql'}
                           />
                         </div>
                       </div>
                       <div>
                         <div className="flex items-center gap-2 mb-2">
-                          <Label>Instance <span className="text-destructive">*</span></Label>
+                          <Label>Instance</Label>
                           <HelpTooltip {...helpContent.connections.instance} />
                         </div>
                         <Input
@@ -1435,7 +1514,6 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                             : setAzureSqlData({ ...azureSqlData, instance: e.target.value })
                           }
                           placeholder={dbType === 'mssql' ? "SQLEXPRESS" : "(Optional for Azure)"}
-                          required
                         />
                       </div>
                       <div>
@@ -1453,20 +1531,26 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                           required
                         />
                       </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Label>Trusted Connection (Windows Auth)</Label>
-                          <HelpTooltip {...helpContent.connections.trustedConnection} />
+                      {dbType === 'mssql' && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Label>Trusted Connection (Windows Auth)</Label>
+                            <HelpTooltip {...helpContent.connections.trustedConnection} />
+                          </div>
+                          <Switch
+                            checked={mssqlData.trustedConnection}
+                            onCheckedChange={(checked) =>
+                              setMssqlData({
+                                ...mssqlData,
+                                trustedConnection: checked,
+                                username: checked ? '' : mssqlData.username,
+                                password: checked ? '' : mssqlData.password,
+                              })
+                            }
+                          />
                         </div>
-                        <Switch
-                          checked={dbType === 'mssql' ? mssqlData.trustedConnection : azureSqlData.trustedConnection}
-                          onCheckedChange={(checked) => dbType === 'mssql'
-                            ? setMssqlData({ ...mssqlData, trustedConnection: checked })
-                            : setAzureSqlData({ ...azureSqlData, trustedConnection: checked })
-                          }
-                        />
-                      </div>
-                      {!(dbType === 'mssql' ? mssqlData.trustedConnection : azureSqlData.trustedConnection) && (
+                      )}
+                      {!(dbType === 'mssql' && mssqlData.trustedConnection) && (
                         <>
                           <div>
                             <div className="flex items-center gap-2 mb-2">
@@ -1661,7 +1745,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                           <Button
                             onClick={() => {
                               if (editingConnectionId) {
-                                handleFetchDatabases({ id: editingConnectionId });
+                                handleFetchDatabases(editingConnectionId);
                               }
                             }}
                             disabled={!editingConnectionId || loadingDatabases}

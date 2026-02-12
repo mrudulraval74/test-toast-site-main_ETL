@@ -8,7 +8,7 @@ async function executeQuery(config, query) {
         return await executePostgreSQLQuery(config, query);
     } else if (config.type === 'mysql') {
         return await executeMySQLQuery(config, query);
-    } else if (config.type === 'mssql') {
+    } else if (config.type === 'mssql' || config.type === 'azuresql') {
         return await executeMSSQLQuery(config, query);
     } else {
         throw new Error(`Unsupported database type: ${config.type}`);
@@ -76,6 +76,9 @@ async function executeMySQLQuery(config, query) {
 async function executeMSSQLQuery(config, query) {
     let server = config.host;
     let instanceName = config.instance;
+    const isAzureSql = config.type === 'azuresql';
+    const isTrustedAuth = isAzureSql ? false : config.trusted === true;
+    const hasSqlCredentials = Boolean(config.username || config.password);
     const parsedPort = config.port ? parseInt(config.port, 10) : undefined;
     const hasExplicitPort = Number.isInteger(parsedPort) && parsedPort > 0;
 
@@ -103,15 +106,21 @@ async function executeMSSQLQuery(config, query) {
         },
     };
 
-    if (config.trusted) {
+    if (isTrustedAuth) {
+        if (hasSqlCredentials) {
+            console.log('[MSSQL] Windows Auth selected; ignoring provided username/password.');
+        }
         try {
             require.resolve('msnodesqlv8');
             mssqlConfig.driver = 'msnodesqlv8';
             mssqlConfig.options.trustedConnection = true;
         } catch (e) {
-            throw new Error("Trusted Connection (Windows Auth) requires the 'msnodesqlv8' driver. Please install it manually using 'npm install msnodesqlv8' (requires build tools) or use SQL Authentication (Username/Password).");
+            throw new Error("Windows Auth selected: Trusted Connection requires the 'msnodesqlv8' driver. Please install it manually using 'npm install msnodesqlv8' (requires build tools) or use SQL Authentication (Username/Password).");
         }
     } else {
+        if (!config.username || !config.password) {
+            throw new Error('SQL Authentication requires both username and password. Enable Trusted Connection for Windows Authentication.');
+        }
         mssqlConfig.user = config.username;
         mssqlConfig.password = config.password;
     }
@@ -123,6 +132,7 @@ async function executeMSSQLQuery(config, query) {
     const pool = new sql.ConnectionPool(mssqlConfig);
 
     try {
+        console.log(`[MSSQL] Auth mode: ${isTrustedAuth ? 'Windows' : 'SQL'}`);
         console.log(`[MSSQL] Connecting to ${server}${instanceName ? '\\' + instanceName : ''}${mssqlConfig.port ? ':' + mssqlConfig.port : ''}, DB: ${config.database}`);
         // console.log('DEBUG Config:', JSON.stringify({ ...mssqlConfig, password: '***' })); 
 

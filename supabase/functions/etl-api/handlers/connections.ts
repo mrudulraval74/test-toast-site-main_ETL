@@ -4,6 +4,38 @@ import { corsHeaders } from '../utils/cors.ts';
 import { getSupabaseAdmin, getUserIdFromRequest } from '../utils/supabase.ts';
 import { fetchPostgresMetadata, fetchMssqlMetadata, fetchMysqlMetadata, generateMockMetadata } from '../utils/metadata.ts';
 
+function normalizeSqlServerConnectionPayload(payload: any) {
+    if (!payload || (payload.type !== 'mssql' && payload.type !== 'azuresql')) {
+        return payload;
+    }
+
+    const normalized = { ...payload };
+    const normalizedInstance = normalized.instance && String(normalized.instance).trim()
+        ? String(normalized.instance).trim()
+        : undefined;
+    const parsedPort = normalized.port ? parseInt(normalized.port, 10) : undefined;
+
+    normalized.instance = normalizedInstance;
+    normalized.port = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : undefined;
+
+    // For named MSSQL instances, default 1433 is often incorrect (e.g., SQLEXPRESS dynamic ports).
+    // If instance is present and port is unchanged default, prefer instance resolution.
+    if (normalized.type === 'mssql' && normalized.instance && normalized.port === 1433) {
+        normalized.port = undefined;
+    }
+
+    if (normalized.type === 'azuresql') {
+        normalized.trusted = false;
+    }
+
+    if (normalized.trusted === true) {
+        normalized.username = undefined;
+        normalized.password = undefined;
+    }
+
+    return normalized;
+}
+
 export async function handleGetMetadata(req: Request, connectionId: string): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const { data: conn, error: connError } = await supabase.from('connections').select('*').eq('id', connectionId).single();
@@ -46,10 +78,33 @@ export async function handleGetMetadata(req: Request, connectionId: string): Pro
 }
 
 export async function handleTestConnection(req: Request): Promise<Response> {
-    const body = await req.json();
+    const rawBody = await req.json();
+    const body = normalizeSqlServerConnectionPayload(rawBody);
     const { type, host, username, database, trusted, filePath, agentId } = body;
 
     console.log(`Connection test request for ${type}:`, body);
+
+    if (!type) {
+        return new Response(JSON.stringify({ error: 'Missing database type' }), { status: 400, headers: corsHeaders });
+    }
+
+    if (type === 'azuresql' && rawBody?.trusted) {
+        return new Response(JSON.stringify({
+            error: 'Windows Authentication is not supported for Azure SQL. Use SQL authentication.'
+        }), { status: 400, headers: corsHeaders });
+    }
+
+    if (type === 'mssql' && rawBody?.trusted && (rawBody?.username || rawBody?.password)) {
+        return new Response(JSON.stringify({
+            error: 'Select either Windows Authentication or SQL Authentication, not both.'
+        }), { status: 400, headers: corsHeaders });
+    }
+
+    if ((type === 'mssql' || type === 'azuresql') && !trusted && (!username || !body.password)) {
+        return new Response(JSON.stringify({
+            error: 'Username and password are required when Windows Authentication is off.'
+        }), { status: 400, headers: corsHeaders });
+    }
 
     // If agentId is provided, create a job for the agent
     if (agentId) {
@@ -89,11 +144,6 @@ export async function handleTestConnection(req: Request): Promise<Response> {
         if (insertError) throw insertError;
 
         return new Response(JSON.stringify({ success: true, jobId, message: 'Test initiated via agent' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
-    // Basic validation based on type
-    if (!type) {
-        return new Response(JSON.stringify({ error: 'Missing database type' }), { status: 400, headers: corsHeaders });
     }
 
     if (type === 'sqlite') {
@@ -165,7 +215,9 @@ export async function handleConnectionsList(req: Request): Promise<Response> {
 
 export async function handleConnectionSave(req: Request): Promise<Response> {
     const supabase = getSupabaseAdmin();
-    const body = await req.json();
+    const rawBody = await req.json();
+    const body = normalizeSqlServerConnectionPayload(rawBody);
+    delete body.encrypt;
     const { data, error } = await supabase.from('connections').insert(body).select().single();
     if (error) throw error;
     return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -173,7 +225,9 @@ export async function handleConnectionSave(req: Request): Promise<Response> {
 
 export async function handleConnectionUpdate(req: Request, connectionId: string): Promise<Response> {
     const supabase = getSupabaseAdmin();
-    const body = await req.json();
+    const rawBody = await req.json();
+    const body = normalizeSqlServerConnectionPayload(rawBody);
+    delete body.encrypt;
     const { data, error } = await supabase.from('connections').update(body).eq('id', connectionId).select().single();
     if (error) throw error;
     return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });

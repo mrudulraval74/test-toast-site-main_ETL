@@ -162,6 +162,18 @@ async function executeTestConnection(payload) {
     const { connection } = payload;
 
     console.log(`[Test] Testing connection to ${connection.type}://${connection.host}:${connection.port}/${connection.database}`);
+    if (connection.type === 'mssql' || connection.type === 'azuresql') {
+        console.log('[Test] SQL Server auth payload:', {
+            type: connection.type,
+            trusted: !!connection.trusted,
+            host: connection.host,
+            port: connection.port,
+            instance: connection.instance,
+            database: connection.database,
+            usernamePresent: !!connection.username,
+            passwordPresent: !!connection.password,
+        });
+    }
 
     const result = await testConnection(connection);
 
