@@ -542,7 +542,7 @@ PROJECT_ID=${projectId}
         selenium: "Selenium agent package downloaded. Follow the README to set up.",
         playwright: "Playwright agent package downloaded. Follow the README to set up.",
         performance: "Performance agent package downloaded. Follow the README to set up.",
-        etl: "ETL agent downloaded. Extract, run 'npm install', then 'npm start'. Requires Node.js 18+."
+        etl: "ETL agent downloaded. Extract, run 'npm install', then 'npm start'. Works on Node.js 18+ with MSSQL Windows auth via native or SQLCMD fallback."
       };
 
       toast({
@@ -1241,7 +1241,7 @@ PROJECT_ID=${projectId}
                 <div>
                   <p className="font-medium">ETL Agent</p>
                   <p className="text-sm text-muted-foreground">
-                    Node.js-based agent for ETL comparison and data validation. Requires Node.js 18+.
+                    Node.js-based agent for ETL comparison and data validation. Works on Node.js 18+; MSSQL Windows Authentication uses native driver first with SQLCMD fallback.
                   </p>
                 </div>
               </label>

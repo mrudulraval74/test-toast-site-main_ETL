@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { executeComparison } = require('./utils/compareEngine');
-const { testConnection, fetchMetadata } = require('./utils/dbConnector');
+const { testConnection, fetchMetadata, getWindowsAuthCapabilities } = require('./utils/dbConnector');
 require('dotenv').config();
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:54321/functions/v1/etl-api';
@@ -17,9 +17,17 @@ console.log(`ETL Agent starting...`);
 console.log(`---------------------------------------------------`);
 console.log(`---      PATCHED AGENT LOADED (v2)              ---`);
 console.log(`---------------------------------------------------`);
+console.log(`Node Runtime: ${process.version}`);
 console.log(`API Base URL: ${API_BASE_URL}`);
 console.log(`Poll Interval: ${POLL_INTERVAL}ms`);
 console.log(`Heartbeat Interval: ${HEARTBEAT_INTERVAL}ms`);
+const windowsAuthCapabilities = getWindowsAuthCapabilities();
+console.log(`[MSSQL] Windows auth mode: ${windowsAuthCapabilities.mode}`);
+console.log(`[MSSQL] Native driver available: ${windowsAuthCapabilities.nativeAvailable ? 'yes' : 'no'}`);
+console.log(`[MSSQL] SQLCMD available: ${windowsAuthCapabilities.sqlcmdAvailable ? 'yes' : 'no'} (${windowsAuthCapabilities.sqlcmdPath})`);
+if (!windowsAuthCapabilities.nativeAvailable && !windowsAuthCapabilities.sqlcmdAvailable) {
+    console.warn('[MSSQL] Warning: Windows Authentication is not currently available. Install msnodesqlv8 or SQLCMD + ODBC Driver 17/18.');
+}
 
 // Agent state
 let isProcessing = false;

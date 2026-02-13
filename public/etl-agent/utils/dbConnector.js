@@ -1,6 +1,7 @@
 const { Client: PgClient } = require('pg');
 const mysql = require('mysql2/promise');
 const sqlTedious = require('mssql');
+const { spawn, spawnSync } = require('child_process');
 let msnodesql = null;
 
 function parseBooleanFlag(value) {
@@ -120,17 +121,131 @@ function normalizeConnectionConfig(config) {
     return normalized;
 }
 
+function getWindowsAuthMode() {
+    const raw = String(process.env.MSSQL_WINDOWS_AUTH_MODE || 'auto').trim().toLowerCase();
+    if (raw === 'native' || raw === 'sqlcmd' || raw === 'auto') return raw;
+    return 'auto';
+}
+
+function getSqlcmdPath() {
+    return process.env.MSSQL_SQLCMD_PATH || 'sqlcmd';
+}
+
+function getSqlcmdDelimiter() {
+    // sqlcmd accepts only a single-character separator for -s.
+    const configured = process.env.MSSQL_SQLCMD_DELIMITER;
+    if (!configured) return '\t';
+    return String(configured)[0] || '\t';
+}
+
+function isMsnodesqlv8Available() {
+    try {
+        require.resolve('msnodesqlv8');
+        return true;
+    } catch (_error) {
+        return false;
+    }
+}
+
+function isSqlcmdAvailable() {
+    try {
+        const result = spawnSync(getSqlcmdPath(), ['-?'], {
+            encoding: 'utf8',
+            windowsHide: true,
+        });
+        return Boolean(result.status === 0 || result.stdout || result.stderr);
+    } catch (_error) {
+        return false;
+    }
+}
+
+function getWindowsAuthCapabilities() {
+    return {
+        mode: getWindowsAuthMode(),
+        nativeAvailable: isMsnodesqlv8Available(),
+        sqlcmdAvailable: isSqlcmdAvailable(),
+        sqlcmdPath: getSqlcmdPath(),
+    };
+}
+
 function getMsnodesqlv8Driver() {
     if (msnodesql) return msnodesql;
     msnodesql = require('msnodesqlv8');
     return msnodesql;
 }
 
-async function executeWindowsAuthQuery({ server, instanceName, parsedPort, database, ssl }, query) {
+function buildMssqlTarget(server, instanceName, parsedPort) {
+    if (parsedPort) return `${server},${parsedPort}`;
+    if (instanceName) return `${server}\\${instanceName}`;
+    return server;
+}
+
+function isSeparatorLine(line, delimiter) {
+    const tokens = line.split(delimiter).map((token) => token.trim()).filter(Boolean);
+    if (tokens.length === 0) return false;
+    return tokens.every((token) => /^-+$/.test(token));
+}
+
+function parseSqlcmdRows(stdout, delimiter) {
+    const lines = String(stdout || '')
+        .replace(/\r/g, '')
+        .split('\n')
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim() !== '')
+        .filter((line) => !/^\(\d+\s+rows?\s+affected\)$/i.test(line.trim()))
+        .filter((line) => !/^Changed database context to/i.test(line.trim()));
+
+    if (lines.length === 0) {
+        return { rows: [], rowCount: 0, fields: [] };
+    }
+
+    let headerIndex = lines.findIndex((line) => line.includes(delimiter));
+    let fields = [];
+    if (headerIndex === -1) {
+        headerIndex = 0;
+        fields = [lines[0].trim()];
+    } else {
+        fields = lines[headerIndex].split(delimiter).map((v) => v.trim());
+    }
+
+    const rows = [];
+
+    for (let i = headerIndex + 1; i < lines.length; i += 1) {
+        const line = lines[i];
+        if (isSeparatorLine(line, delimiter)) continue;
+        const values = line.includes(delimiter)
+            ? line.split(delimiter).map((v) => v.trim())
+            : [line.trim()];
+        if (values.length !== fields.length) continue;
+        // sqlcmd may repeat headers depending on -h behavior; skip those lines.
+        if (values.every((value, idx) => value === fields[idx])) continue;
+        const row = {};
+        fields.forEach((field, idx) => {
+            row[field] = values[idx] === 'NULL' ? null : values[idx];
+        });
+        rows.push(row);
+    }
+
+    return {
+        rows,
+        rowCount: rows.length,
+        fields,
+    };
+}
+
+function buildWindowsAuthRemediation(extraMessage) {
+    const bits = [
+        extraMessage,
+        "Install Microsoft SQLCMD tools and ensure 'sqlcmd' is in PATH (or set MSSQL_SQLCMD_PATH).",
+        "Install Microsoft ODBC Driver 17 or 18 for SQL Server.",
+        "Optional fallback: switch to SQL Authentication (username/password).",
+    ].filter(Boolean);
+    return bits.join(' ');
+}
+
+async function executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query) {
     const nativeDriver = getMsnodesqlv8Driver();
-    const serverTarget = parsedPort
-        ? `${server},${parsedPort}`
-        : (instanceName ? `${server}\\${instanceName}` : server);
+    const serverTarget = buildMssqlTarget(server, instanceName, parsedPort);
     const driverCandidates = Array.from(new Set([
         process.env.MSSQL_ODBC_DRIVER,
         'ODBC Driver 18 for SQL Server',
@@ -143,7 +258,7 @@ async function executeWindowsAuthQuery({ server, instanceName, parsedPort, datab
     for (const driver of driverCandidates) {
         const connectionString = `Driver={${driver}};Server=${serverTarget};Database=${database};Trusted_Connection=Yes;Encrypt=${ssl ? 'Yes' : 'No'};TrustServerCertificate=Yes;`;
         triedDrivers.push(driver);
-        console.log(`[MSSQL] Windows Auth trying ODBC driver: ${driver}`);
+        console.log(`[MSSQL] Windows Auth trying native ODBC driver: ${driver}`);
         try {
             const rows = await new Promise((resolve, reject) => {
                 nativeDriver.query(connectionString, query, (err, data) => {
@@ -168,7 +283,94 @@ async function executeWindowsAuthQuery({ server, instanceName, parsedPort, datab
         }
     }
 
-    throw new Error(`Windows Authentication failed: no supported SQL Server ODBC driver found. Tried: ${triedDrivers.join(', ')}. Install Microsoft ODBC Driver 17 or 18 for SQL Server, then restart agent.`);
+    throw new Error(`Windows Authentication failed: no supported SQL Server ODBC driver found. Tried: ${triedDrivers.join(', ')}.`);
+}
+
+async function executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query) {
+    const sqlcmdPath = getSqlcmdPath();
+    const target = buildMssqlTarget(server, instanceName, parsedPort);
+    const delimiter = getSqlcmdDelimiter();
+    const args = [
+        '-S', target,
+        '-d', database,
+        '-E',
+        '-b',
+        '-W',
+        // Print headers only once for reliable parsing.
+        '-h', '65535',
+        '-s', delimiter,
+        '-w', '65535',
+        '-r', '1',
+    ];
+
+    if (ssl) {
+        args.push('-N');
+        args.push('-C');
+    }
+
+    args.push('-Q');
+    args.push(`SET NOCOUNT ON; ${query}`);
+
+    console.log(`[MSSQL] Windows Auth trying sqlcmd fallback via ${sqlcmdPath}`);
+
+    return await new Promise((resolve, reject) => {
+        const child = spawn(sqlcmdPath, args, {
+            windowsHide: true,
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (chunk) => {
+            stdout += chunk.toString();
+        });
+        child.stderr.on('data', (chunk) => {
+            stderr += chunk.toString();
+        });
+
+        child.on('error', (error) => {
+            if (error.code === 'ENOENT') {
+                return reject(new Error(buildWindowsAuthRemediation(`'${sqlcmdPath}' not found.`)));
+            }
+            reject(error);
+        });
+
+        child.on('close', (code) => {
+            if (code !== 0) {
+                const shortErr = String(stderr || stdout || 'Unknown SQLCMD error').trim();
+                return reject(new Error(buildWindowsAuthRemediation(`SQLCMD failed (exit ${code}): ${shortErr}`)));
+            }
+            try {
+                resolve(parseSqlcmdRows(stdout, delimiter));
+            } catch (parseError) {
+                reject(new Error(buildWindowsAuthRemediation(`SQLCMD output parse failed: ${parseError.message}`)));
+            }
+        });
+    });
+}
+
+async function executeWindowsAuthWithFallback(connection, query) {
+    const { server, instanceName, parsedPort, database, ssl } = connection;
+    const mode = getWindowsAuthMode();
+
+    if (mode === 'sqlcmd') {
+        return executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query);
+    }
+
+    if (mode === 'native') {
+        return executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query);
+    }
+
+    try {
+        return await executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query);
+    } catch (nativeError) {
+        console.warn(`[MSSQL] Native Windows Auth failed, attempting sqlcmd fallback: ${nativeError.message}`);
+        try {
+            return await executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query);
+        } catch (sqlcmdError) {
+            throw new Error(buildWindowsAuthRemediation(`Windows Authentication failed on both native and SQLCMD paths. Native error: ${nativeError.message}. SQLCMD error: ${sqlcmdError.message}`));
+        }
+    }
 }
 
 // Execute query based on database type
@@ -204,7 +406,7 @@ async function executePostgreSQLQuery(config, query) {
         return {
             rows: result.rows,
             rowCount: result.rowCount,
-            fields: result.fields ? result.fields.map(f => f.name) : [],
+            fields: result.fields ? result.fields.map((f) => f.name) : [],
         };
     } catch (error) {
         if (client) {
@@ -232,7 +434,7 @@ async function executeMySQLQuery(config, query) {
         return {
             rows: Array.isArray(rows) ? rows : [],
             rowCount: Array.isArray(rows) ? rows.length : 0,
-            fields: fields ? fields.map(f => f.name) : [],
+            fields: fields ? fields.map((f) => f.name) : [],
         };
     } catch (error) {
         if (connection) {
@@ -276,12 +478,12 @@ async function executeMSSQLQuery(config, query) {
     }
 
     const mssqlConfig = {
-        server: server,
+        server,
         database: config.database,
         options: {
             encrypt: config.ssl || false,
             trustServerCertificate: true,
-            instanceName: instanceName,
+            instanceName,
         },
     };
 
@@ -289,14 +491,9 @@ async function executeMSSQLQuery(config, query) {
         if (hasSqlCredentials) {
             console.log('[MSSQL] Windows Auth selected; ignoring provided username/password.');
         }
-        try {
-            require.resolve('msnodesqlv8');
-        } catch (e) {
-            throw new Error("Windows Auth selected: Trusted Connection requires the 'msnodesqlv8' driver. Please install it manually using 'npm install msnodesqlv8' (requires build tools) or use SQL Authentication (Username/Password).");
-        }
-        console.log(`[MSSQL] Auth mode: Windows`);
+        console.log(`[MSSQL] Auth mode: Windows (${getWindowsAuthMode()})`);
         console.log(`[MSSQL] Connecting to ${server}${instanceName ? '\\' + instanceName : ''}${hasExplicitPort ? ':' + parsedPort : ''}, DB: ${config.database}`);
-        return await executeWindowsAuthQuery({
+        return await executeWindowsAuthWithFallback({
             server,
             instanceName,
             parsedPort: hasExplicitPort ? parsedPort : undefined,
@@ -313,7 +510,7 @@ async function executeMSSQLQuery(config, query) {
     if (!instanceName && hasExplicitPort) {
         mssqlConfig.port = parsedPort;
     }
-    console.log(`[MSSQL] Auth mode: SQL`);
+    console.log('[MSSQL] Auth mode: SQL');
     console.log(`[MSSQL] Connecting to ${server}${instanceName ? '\\' + instanceName : ''}${mssqlConfig.port ? ':' + mssqlConfig.port : ''}, DB: ${config.database}`);
 
     let pool;
@@ -333,14 +530,13 @@ async function executeMSSQLQuery(config, query) {
         console.error('[MSSQL] Connection/Query Error:', {
             message: error.message,
             code: error.code,
-            originalError: error
+            originalError: error,
         });
         if (pool) {
             try { await pool.close(); } catch (e) { /* ignore */ }
         }
         throw error;
     }
-
 }
 
 async function fetchPostgreSQLMetadata(config) {
@@ -481,8 +677,8 @@ async function fetchMetadata(config) {
             schema.tables.get(row.table_name).columns.push({
                 name: row.column_name,
                 type: row.data_type,
-                nullable: row.is_nullable === 'YES' || row.is_nullable === 1 || row.is_nullable === true,
-                isPrimaryKey: row.is_primary === 1 || row.is_primary === true,
+                nullable: row.is_nullable === 'YES' || row.is_nullable === '1' || row.is_nullable === 1 || row.is_nullable === true,
+                isPrimaryKey: row.is_primary === '1' || row.is_primary === 1 || row.is_primary === true,
                 tableType: row.table_type === 'VIEW' ? 'view' : 'table',
             });
         }
@@ -504,4 +700,5 @@ module.exports = {
     executeQuery,
     testConnection,
     fetchMetadata,
+    getWindowsAuthCapabilities,
 };

@@ -76,7 +76,7 @@ export const useAILearning = (projectId?: string) => {
       }
 
       const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL || "https://lghzmijzfpvrcvogxpew.supabase.co"}/functions/v1/ai-qa-orchestrator`,
+        `${import.meta.env.VITE_SUPABASE_URL || "https://qfjeicrvelgmyyecvlxo.supabase.co"}/functions/v1/ai-qa-orchestrator`,
         {
           method: "POST",
           headers: {
@@ -232,7 +232,7 @@ export const useAILearning = (projectId?: string) => {
     
     try {
       const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL || "https://lghzmijzfpvrcvogxpew.supabase.co"}/functions/v1/ai-qa-orchestrator`,
+        `${import.meta.env.VITE_SUPABASE_URL || "https://qfjeicrvelgmyyecvlxo.supabase.co"}/functions/v1/ai-qa-orchestrator`,
         {
           method: "POST",
           headers: {
@@ -301,7 +301,7 @@ export const useAILearning = (projectId?: string) => {
     
     try {
       const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL || "https://lghzmijzfpvrcvogxpew.supabase.co"}/functions/v1/ai-qa-orchestrator`,
+        `${import.meta.env.VITE_SUPABASE_URL || "https://qfjeicrvelgmyyecvlxo.supabase.co"}/functions/v1/ai-qa-orchestrator`,
         {
           method: "POST",
           headers: {

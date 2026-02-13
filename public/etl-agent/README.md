@@ -4,16 +4,19 @@ A self-hosted agent for executing ETL data comparisons between databases.
 
 ## Features
 
-- **Multi-Database Support**: PostgreSQL, MySQL, MSSQL
+- **Multi-Database Support**: PostgreSQL, MySQL, MSSQL, Azure SQL
 - **Automated Job Polling**: Continuously polls for comparison jobs
 - **Secure**: Database credentials stay on your machine
-- **Easy Setup**: Simple configuration via environment variables
+- **Node Upgrade Safe**: Native MSSQL Windows auth first, with SQLCMD fallback
 
 ## Requirements
 
-- Node.js 18.0.0 or higher
+- Node.js 18+ (works across modern Node versions)
 - Network access to your databases
 - Network access to Data Sentinel AI API
+- For MSSQL Windows Authentication portability:
+  - Microsoft SQLCMD tools installed (`sqlcmd`)
+  - Microsoft ODBC Driver 17 or 18 for SQL Server
 
 ## Installation
 
@@ -28,20 +31,20 @@ A self-hosted agent for executing ETL data comparisons between databases.
    npm install
    ```
 
-3. **Install Windows Authentication driver (mandatory)**
+3. **Optional: install native Windows auth driver**
    ```bash
    npm run install:windows-auth
    ```
 
 4. **Configure environment**
-   
+
    The `.env` file has been pre-configured with your API key. You can modify settings if needed:
-   
+
    ```env
    # API Configuration
    API_BASE_URL=https://your-domain.com/functions/v1/etl-api
    AGENT_API_KEY=your-agent-api-key
-   
+
    # Agent Settings
    POLL_INTERVAL=5000
    PROJECT_ID=your-project-id
@@ -60,85 +63,59 @@ A self-hosted agent for executing ETL data comparisons between databases.
 - `AGENT_API_KEY`: Your agent API key (required, pre-configured)
 - `POLL_INTERVAL`: Job polling interval in milliseconds (default: 5000)
 - `PROJECT_ID`: Your project ID (required, pre-configured)
+- `MSSQL_WINDOWS_AUTH_MODE`: `auto` (default), `native`, or `sqlcmd`
+- `MSSQL_SQLCMD_PATH`: Optional absolute path to `sqlcmd` executable
+- `MSSQL_SQLCMD_DELIMITER`: Optional SQLCMD output delimiter (single character only, default: tab)
 
-### Database Connections
+### Windows Authentication Behavior
 
-Database connection details are provided by the API when jobs are assigned. The agent supports:
+- `auto` (default): try native `msnodesqlv8` first, then SQLCMD fallback
+- `native`: use only native `msnodesqlv8`
+- `sqlcmd`: force SQLCMD path
 
-- **PostgreSQL**: Standard PostgreSQL databases
-- **MySQL**: MySQL and MariaDB databases
-- **MSSQL**: Microsoft SQL Server databases
+This preserves current behavior on machines where native auth already works, and adds resilience on Node upgrades where native modules may fail.
 
 ## Usage
 
-1. **Start the agent** using `npm start`
-2. **Create comparisons** in the Data Sentinel AI web interface
-3. **Monitor progress** - The agent will automatically:
-   - Poll for new comparison jobs
-   - Execute queries on source and target databases
-   - Compare results
-   - Submit results back to the API
-
-## Logs
-
-The agent provides detailed console output:
-
-```
-ETL Agent starting...
-API Base URL: https://your-domain.com/functions/v1/etl-api
-Poll Interval: 5000ms
-[Agent] Starting job polling...
-[Job] Received job: abc-123 (etl_comparison)
-[Job abc-123] Started processing
-[Comparison] Executing ETL comparison...
-[Comparison] Source: postgresql://localhost:5432/source_db
-[Comparison] Target: postgresql://localhost:5432/target_db
-[Comparison] Complete - Status: passed
-[Job abc-123] Completed successfully
-```
+1. Start the agent using `npm start`
+2. Create comparisons in the Data Sentinel AI web interface
+3. Monitor progress in logs
 
 ## Troubleshooting
 
-### Agent won't start
+### Agent starts but MSSQL Windows auth fails
 
-- Verify Node.js version: `node --version` (must be 18+)
-- Check `.env` file exists and contains `AGENT_API_KEY`
-- Ensure network connectivity to API
+1. Verify SQLCMD availability:
+   ```bash
+   sqlcmd -?
+   ```
+2. Install ODBC Driver 17 or 18 for SQL Server
+3. If native driver is desired, run:
+   ```bash
+   npm run install:windows-auth
+   ```
+4. You can also switch to SQL authentication (username/password) for MSSQL connections
+
+### SQLCMD not found
+
+- Add SQLCMD to PATH, or set:
+  ```env
+  MSSQL_SQLCMD_PATH=C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\sqlcmd.exe
+  ```
 
 ### Database connection errors
 
-- Verify database credentials
-- Check network access to database servers
-- Ensure database allows connections from agent's IP
+- Verify credentials and auth type
+- Check network/firewall access
 - Check SSL/TLS requirements
-
-### Windows Authentication (MSSQL) issues
-
-- Install native driver support:
-  ```bash
-  npm run install:windows-auth
-  ```
-- Install Microsoft ODBC Driver 17 or 18 for SQL Server on the agent machine.
-- If build tools are missing, install Visual Studio C++ Build Tools and retry.
-
-### Jobs not appearing
-
-- Verify agent is running and polling
-- Check `AGENT_API_KEY` is correct
-- Ensure agent is registered in the web interface
-- Check API connectivity
 
 ## Development
 
-For development with auto-restart on file changes:
+For development with auto-restart:
 
 ```bash
 npm run dev
 ```
-
-## Support
-
-For issues or questions, please contact support or check the documentation at your Data Sentinel AI instance.
 
 ## License
 

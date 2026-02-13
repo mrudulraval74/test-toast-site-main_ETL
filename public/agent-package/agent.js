@@ -14,7 +14,7 @@ import { chromium, firefox, webkit } from 'playwright';
 // Configuration (defaults, will be updated from server settings)
 const CONFIG = {
   API_TOKEN: process.env.WISPR_API_TOKEN || 'wispr_agent_1f568936b4ed4dab88f8fc1ab50c1a35',
-  API_BASE_URL: 'https://lghzmijzfpvrcvogxpew.supabase.co/functions/v1/agent-api',
+  API_BASE_URL: 'https://qfjeicrvelgmyyecvlxo.supabase.co/functions/v1/agent-api',
   HEARTBEAT_INTERVAL: 60000, // 60 seconds (default, fetched from server)
   POLL_INTERVAL: 10000, // 10 seconds (default, fetched from server)
   MAX_CAPACITY: 3,

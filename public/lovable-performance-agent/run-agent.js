@@ -21,7 +21,7 @@ import os from 'os';
 // Configuration (defaults, will be updated from server settings)
 const CONFIG = {
   API_TOKEN: process.env.WISPR_API_TOKEN || 'wispr_agent_placeholder',
-  API_BASE_URL: 'https://lghzmijzfpvrcvogxpew.supabase.co/functions/v1/agent-api',
+  API_BASE_URL: 'https://qfjeicrvelgmyyecvlxo.supabase.co/functions/v1/agent-api',
   HEARTBEAT_INTERVAL: 60000, // 60 seconds
   POLL_INTERVAL: 10000, // 10 seconds
   MAX_CAPACITY: 1, // Performance tests are resource intensive
