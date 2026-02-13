@@ -95,8 +95,9 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
                         <Folder className="h-4 w-4 text-primary" />
                         Test Explorer
                     </h3>
-                    {savedRuns.length > 0 && (
-                        <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                        {savedRuns.length > 0 && (
+                            <>
                             {/* Select All Checkbox */}
                             <div className="flex items-center gap-1">
                                 <Checkbox
@@ -145,10 +146,11 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
                                             </AlertDialogAction>
                                         </AlertDialogFooter>
                                     </AlertDialogContent>
-                                </AlertDialog>
+                                    </AlertDialog>
                             )}
-                        </div>
-                    )}
+                            </>
+                        )}
+                    </div>
                 </div>
                 <div className="relative">
                     <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />

@@ -12,7 +12,7 @@ import { connectionsApi, API_BASE_URL } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { getValidationMessage, formatValidationMessage } from '@/lib/validationMessages';
 import { helpContent } from '@/lib/helpContent';
-import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, ChevronDown, ChevronUp, Eye, EyeOff, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Loader2, Database, TestTube, Trash2, Info, AlertCircle, Pencil, Copy, CheckCircle2, Sparkles, X, Eye, EyeOff, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Tooltip,
@@ -37,8 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { AIInput } from '@/components/AIInput';
-import { useAIChat } from '@/hooks/useAIChat';
+import { Checkbox } from '@/components/ui/checkbox';
 import { AIButton } from '@/components/AIButton';
 import { AIResponseModal } from '@/components/AIResponseModal';
 
@@ -77,8 +76,6 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
   const [editingConnectionId, setEditingConnectionId] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [fetchingStatus, setFetchingStatus] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const { sendMessage, actions } = useAIChat('connections');
 
   // AI State
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -88,14 +85,16 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
   const [aiAction, setAiAction] = useState<string | null>(null);
   const [showSqlPassword, setShowSqlPassword] = useState(false);
   const [connectionSearchTerm, setConnectionSearchTerm] = useState('');
+  const [connectionSortBy, setConnectionSortBy] = useState<'newest' | 'oldest' | 'name_asc' | 'name_desc' | 'type_asc'>('newest');
   const [currentConnectionsPage, setCurrentConnectionsPage] = useState(1);
   const [connectionsPerPage, setConnectionsPerPage] = useState(12);
+  const [selectedConnectionIds, setSelectedConnectionIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const [bulkActionInProgress, setBulkActionInProgress] = useState(false);
 
   const filteredConnections = useMemo(() => {
     const searchTerm = connectionSearchTerm.trim().toLowerCase();
-    if (!searchTerm) return savedConnections;
-
-    return savedConnections.filter((conn) => {
+    const base = savedConnections.filter((conn) => {
       const name = (conn.name || '').toLowerCase();
       const type = (conn.type || '').toLowerCase();
       const host = (conn.host || '').toLowerCase();
@@ -107,7 +106,20 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         instance.includes(searchTerm)
       );
     });
-  }, [savedConnections, connectionSearchTerm]);
+
+    const byDate = (conn: any) => {
+      const ts = conn?.created_at ? new Date(conn.created_at).getTime() : 0;
+      return Number.isNaN(ts) ? 0 : ts;
+    };
+
+    return [...base].sort((a, b) => {
+      if (connectionSortBy === 'name_asc') return String(a?.name || '').localeCompare(String(b?.name || ''));
+      if (connectionSortBy === 'name_desc') return String(b?.name || '').localeCompare(String(a?.name || ''));
+      if (connectionSortBy === 'type_asc') return String(a?.type || '').localeCompare(String(b?.type || ''));
+      if (connectionSortBy === 'oldest') return byDate(a) - byDate(b);
+      return byDate(b) - byDate(a); // newest
+    });
+  }, [savedConnections, connectionSearchTerm, connectionSortBy]);
 
   const totalConnectionsPages = Math.max(1, Math.ceil(filteredConnections.length / connectionsPerPage));
   const paginatedConnections = useMemo(() => {
@@ -279,7 +291,18 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
 
   useEffect(() => {
     setCurrentConnectionsPage(1);
-  }, [connectionSearchTerm, connectionsPerPage, savedConnections.length]);
+  }, [connectionSearchTerm, connectionSortBy, connectionsPerPage, savedConnections.length]);
+
+  useEffect(() => {
+    setSelectedConnectionIds((prev) => {
+      const validIds = new Set(savedConnections.map((conn) => conn.id));
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [savedConnections]);
 
   const loadSavedConnections = async () => {
     const { data, error } = await connectionsApi.list();
@@ -410,7 +433,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: prompt,
-          context: 'connections',
+          context: 'etl',
           history: [],
           contextData: { error: errorMessage }
         })
@@ -818,7 +841,7 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
           });
         }
       }
-    } else {
+    } else if (conn.type === 'mysql' || conn.type === 'mariadb') {
       setMysqlData({
         name: `${conn.name} - Copy`,
         host: conn.host || '',
@@ -828,6 +851,75 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         password: conn.password || '',
         charset: conn.charset || 'utf8mb4',
         ssl: conn.ssl || false,
+      });
+      if (conn.type === 'mariadb') {
+        setMariadbData({
+          name: `${conn.name} - Copy`,
+          host: conn.host || '',
+          port: conn.port?.toString() || '3306',
+          database: conn.database || '',
+          username: conn.username || '',
+          password: conn.password || '',
+          charset: conn.charset || 'utf8mb4',
+          ssl: conn.ssl || false,
+        });
+      }
+    } else if (conn.type === 'postgresql') {
+      setPostgresData({
+        name: `${conn.name} - Copy`,
+        host: conn.host || '',
+        port: conn.port?.toString() || '5432',
+        database: conn.database || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        schema: conn.schema || conn.schema_name || 'public',
+        ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'oracle') {
+      setOracleData({
+        name: `${conn.name} - Copy`,
+        host: conn.host || '',
+        port: conn.port?.toString() || '1521',
+        serviceName: conn.serviceName || conn.service_name || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'databricks') {
+      setDatabricksData({
+        name: `${conn.name} - Copy`,
+        host: conn.host || '',
+        httpPath: conn.httpPath || conn.http_path || '',
+        token: conn.token || '',
+        catalog: conn.catalog || 'hive_metastore',
+        schema: conn.schema || conn.schema_name || 'default',
+      });
+    } else if (conn.type === 'snowflake') {
+      setSnowflakeData({
+        name: `${conn.name} - Copy`,
+        account: conn.account || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        warehouse: conn.warehouse || '',
+        database: conn.database || '',
+        schema: conn.schema || conn.schema_name || 'PUBLIC',
+        role: conn.role || '',
+      });
+    } else if (conn.type === 'redshift') {
+      setRedshiftData({
+        name: `${conn.name} - Copy`,
+        host: conn.host || '',
+        port: conn.port?.toString() || '5439',
+        database: conn.database || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        schema: conn.schema || conn.schema_name || 'public',
+        ssl: conn.ssl ?? true,
+      });
+    } else if (conn.type === 'sqlite') {
+      setSqliteData({
+        name: `${conn.name} - Copy`,
+        filePath: conn.filePath || conn.file_path || '',
       });
     }
 
@@ -1046,16 +1138,84 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
           description: 'Windows Authentication is not supported for Azure SQL. Trusted Connection was turned off.',
         });
       }
-    } else {
+    } else if (conn.type === 'mysql') {
       setMysqlData({
         name: conn.name || '',
         host: conn.host || '',
         port: conn.port?.toString() || '3306',
         database: conn.database || '',
         username: conn.username || '',
-        password: '', // Don't populate password for security
+        password: conn.password || '',
         charset: conn.charset || 'utf8mb4',
         ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'mariadb') {
+      setMariadbData({
+        name: conn.name || '',
+        host: conn.host || '',
+        port: conn.port?.toString() || '3306',
+        database: conn.database || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        charset: conn.charset || 'utf8mb4',
+        ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'postgresql') {
+      setPostgresData({
+        name: conn.name || '',
+        host: conn.host || '',
+        port: conn.port?.toString() || '5432',
+        database: conn.database || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        schema: conn.schema || conn.schema_name || 'public',
+        ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'oracle') {
+      setOracleData({
+        name: conn.name || '',
+        host: conn.host || '',
+        port: conn.port?.toString() || '1521',
+        serviceName: conn.serviceName || conn.service_name || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        ssl: conn.ssl || false,
+      });
+    } else if (conn.type === 'databricks') {
+      setDatabricksData({
+        name: conn.name || '',
+        host: conn.host || '',
+        httpPath: conn.httpPath || conn.http_path || '',
+        token: conn.token || '',
+        catalog: conn.catalog || 'hive_metastore',
+        schema: conn.schema || conn.schema_name || 'default',
+      });
+    } else if (conn.type === 'snowflake') {
+      setSnowflakeData({
+        name: conn.name || '',
+        account: conn.account || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        warehouse: conn.warehouse || '',
+        database: conn.database || '',
+        schema: conn.schema || conn.schema_name || 'PUBLIC',
+        role: conn.role || '',
+      });
+    } else if (conn.type === 'redshift') {
+      setRedshiftData({
+        name: conn.name || '',
+        host: conn.host || '',
+        port: conn.port?.toString() || '5439',
+        database: conn.database || '',
+        username: conn.username || '',
+        password: conn.password || '',
+        schema: conn.schema || conn.schema_name || 'public',
+        ssl: conn.ssl ?? true,
+      });
+    } else if (conn.type === 'sqlite') {
+      setSqliteData({
+        name: conn.name || '',
+        filePath: conn.filePath || conn.file_path || '',
       });
     }
 
@@ -1201,229 +1361,186 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     }
   };
 
-
-
-  // Handle AI Actions
-  useEffect(() => {
-    if (actions.length > 0) {
-      const lastAction = actions[actions.length - 1];
-      if (lastAction.type === 'CREATE_CONNECTION') {
-        const data = lastAction.data;
-
-        // ENHANCEMENT: Validate AI-generated data
-        const validationIssues = [];
-
-        // Validate port number
-        if (data.port && (isNaN(data.port) || data.port < 1 || data.port > 65535)) {
-          validationIssues.push(`Invalid port number: ${data.port}`);
-          data.port = data.type === 'mysql' ? 3306 : 1433; // Use default
-        }
-
-        // Validate required fields
-        if (!data.name || !data.name.trim()) {
-          validationIssues.push('Connection name is required');
-        }
-        if (!data.host || !data.host.trim()) {
-          validationIssues.push('Host is required');
-        }
-
-        // ENHANCEMENT: Check for duplicate connection names
-        const duplicateName = savedConnections.find(
-          conn => conn.name.toLowerCase() === data.name?.toLowerCase()
-        );
-        if (duplicateName) {
-          validationIssues.push(`Connection name "${data.name}" already exists`);
-          data.name = `${data.name} (AI Generated)`;
-        }
-
-        // Show validation warnings if any
-        if (validationIssues.length > 0) {
-          toast({
-            title: "Validation Warnings",
-            description: validationIssues.join('\n'),
-            variant: "destructive",
-            duration: 8000,
-          });
-        }
-
-        setShowNewForm(true);
-        setEditingConnectionId(null);
-
-        if (data.type === 'mysql') {
-          setDbType('mysql');
-          setMysqlData(prev => ({
-            ...prev,
-            name: data.name || prev.name,
-            host: data.host || prev.host,
-            port: data.port?.toString() || prev.port,
-            database: data.database || prev.database,
-            username: data.username || prev.username,
-            ssl: data.ssl !== undefined ? data.ssl : prev.ssl,
-            charset: data.charset || prev.charset
-          }));
-        } else if (data.type === 'sqlserver' || data.type === 'mssql') {
-          setDbType('mssql');
-          setMssqlData(prev => ({
-            ...prev,
-            name: data.name || prev.name,
-            host: data.host || prev.host,
-            port: data.port?.toString() || prev.port,
-            instance: data.instance || prev.instance, // FIX: Added instance mapping
-            initialDatabase: data.database || prev.initialDatabase,
-            username: data.username || prev.username,
-            trustedConnection: data.useWindowsAuth !== undefined ? data.useWindowsAuth : prev.trustedConnection, // FIX: Property name mapping
-            ssl: data.ssl !== undefined ? data.ssl : prev.ssl
-          }));
-        } else if (data.type === 'azuresql') {
-          setDbType('azuresql');
-          setAzureSqlData(prev => ({
-            ...prev,
-            name: data.name || prev.name,
-            host: data.host || prev.host,
-            port: data.port?.toString() || prev.port,
-            instance: data.instance || prev.instance,
-            initialDatabase: data.database || prev.initialDatabase,
-            username: data.username || prev.username,
-            trustedConnection: false, // Azure SQL doesn't use Windows Auth
-            ssl: true // Azure SQL enforces SSL
-          }));
-        }
-
-        toast({
-          title: "Form Filled",
-          description: validationIssues.length > 0
-            ? "Connection details pre-filled with some corrections."
-            : "Connection details have been pre-filled by AI.",
-        });
-      } else if (lastAction.type === 'TEST_CONNECTION') {
-        handleTestConnection();
-        toast({
-          title: "Testing Connection",
-          description: "Initiating connection test as requested...",
-        });
-      } else if (lastAction.type === 'SUGGEST_FIX') {
-        // FIX: Added SUGGEST_FIX handler
-        const troubleshooting = lastAction.data;
-        const fixes = troubleshooting.suggested_fixes || [];
-        const warnings = troubleshooting.security_warnings || [];
-
-        let description = '';
-        if (fixes.length > 0) {
-          description += `Suggestions:\n${fixes.map((fix, i) => `${i + 1}. ${fix}`).join('\n')}`;
-        }
-        if (warnings.length > 0) {
-          description += `\n\nWarnings:\n${warnings.map((warn, i) => `⚠️ ${warn}`).join('\n')}`;
-        }
-
-        toast({
-          title: `Troubleshooting: ${troubleshooting.error_type || 'Connection Issue'}`,
-          description: description || 'No specific suggestions available.',
-          duration: 15000, // Longer duration for troubleshooting info
-        });
-      }
-    }
-  }, [actions, savedConnections]);
-
-
-
-  const handleAIGenerate = async (prompt: string) => {
-    setGenerating(true);
-    try {
-      await sendMessage(prompt);
-    } catch (error: any) {
-      console.error("AI Generation failed:", error);
-      const errorMsg = error?.message || error?.toString() || 'Unknown error';
-      toast({
-        title: "Generation Failed",
-        description: `Could not generate connection details: ${errorMsg}`,
-        variant: "destructive",
-        duration: 8000
-      });
-    } finally {
-      setGenerating(false);
-    }
-  };
-
   const renderConnectionActions = (conn: any) => (
-    <div className="mt-auto flex flex-wrap gap-1">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 px-2"
-            onClick={() => {
-              if (connectionId === conn.id && databaseTree.length > 0) {
-                setConnectionId(null);
-                setDatabaseTree([]);
-              } else {
-                handleFetchDatabases(conn.id);
-              }
-            }}
-            disabled={loadingDatabases && connectionId === conn.id}
-          >
-            {loadingDatabases && connectionId === conn.id ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : connectionId === conn.id && databaseTree.length > 0 ? (
-              <X className="h-3.5 w-3.5" />
-            ) : (
-              <Database className="h-3.5 w-3.5" />
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {connectionId === conn.id && databaseTree.length > 0
-            ? 'Collapse Database Structure'
-            : 'Fetch Database Structure'}
-        </TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 px-2"
-            onClick={() => handleDuplicateConnection(conn)}
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Duplicate</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 px-2"
-            onClick={() => handleEditConnection(conn)}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Edit</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="sm"
-            variant="destructive"
-            className="h-8 px-2"
-            onClick={() => {
-              setConnectionToDelete(conn);
-              setDeleteDialogOpen(true);
-            }}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Delete</TooltipContent>
-      </Tooltip>
+    <div className="flex items-center justify-end gap-0.5">
+      {connectionId === conn.id && (databaseTree.length > 0 || loadingDatabases || !!metadataError) ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 text-foreground/80 hover:bg-muted/60"
+          title="Hide Database Structure"
+          onClick={() => {
+            setConnectionId(null);
+            setDatabaseTree([]);
+            setMetadataError(null);
+            setFetchingStatus(null);
+          }}
+        >
+          <EyeOff className="h-3.5 w-3.5" />
+        </Button>
+      ) : (
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-foreground/80 hover:bg-muted/60"
+        title="Fetch Database Structure"
+        onClick={() => {
+          handleFetchDatabases(conn.id);
+        }}
+        disabled={loadingDatabases && connectionId === conn.id}
+      >
+        <Database className="h-3.5 w-3.5" />
+      </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-foreground/80 hover:bg-muted/60"
+        title="Duplicate"
+        onClick={() => handleDuplicateConnection(conn)}
+      >
+        <Copy className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-foreground/80 hover:bg-muted/60"
+        title="Edit"
+        onClick={() => handleEditConnection(conn)}
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-destructive/90 hover:bg-destructive/10 hover:text-destructive"
+        title="Delete"
+        onClick={() => {
+          setConnectionToDelete(conn);
+          setDeleteDialogOpen(true);
+        }}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
     </div>
   );
+
+  const toggleConnectionSelection = (id: string, checked: boolean) => {
+    setSelectedConnectionIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const allPageConnectionsSelected = paginatedConnections.length > 0 && paginatedConnections.every((conn) => selectedConnectionIds.has(conn.id));
+  const somePageConnectionsSelected = paginatedConnections.some((conn) => selectedConnectionIds.has(conn.id));
+
+  const toggleSelectAllOnPage = (checked: boolean) => {
+    setSelectedConnectionIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        paginatedConnections.forEach((conn) => next.add(conn.id));
+      } else {
+        paginatedConnections.forEach((conn) => next.delete(conn.id));
+      }
+      return next;
+    });
+  };
+
+  const buildConnectionPayloadFromSaved = (conn: any, copySuffix = '') => {
+    const payload: any = {
+      type: conn.type,
+      name: `${conn.name || 'Connection'}${copySuffix}`,
+    };
+
+    const copyFields = [
+      'host', 'port', 'instance', 'database', 'username', 'password', 'ssl', 'schema', 'schema_name',
+      'trusted', 'serviceName', 'service_name', 'httpPath', 'http_path', 'token', 'catalog', 'account',
+      'warehouse', 'role', 'charset', 'filePath', 'file_path'
+    ];
+
+    copyFields.forEach((key) => {
+      if (conn[key] !== undefined && conn[key] !== null && conn[key] !== '') {
+        payload[key] = conn[key];
+      }
+    });
+
+    return payload;
+  };
+
+  const handleBulkDuplicateConnections = async () => {
+    if (selectedConnectionIds.size === 0) return;
+
+    setBulkActionInProgress(true);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const conn of savedConnections) {
+      if (!selectedConnectionIds.has(conn.id)) continue;
+      const payload = buildConnectionPayloadFromSaved(conn, ' - Copy');
+      const { error } = await connectionsApi.save(payload);
+      if (error) failedCount += 1;
+      else successCount += 1;
+    }
+
+    setBulkActionInProgress(false);
+    setSelectedConnectionIds(new Set());
+    await loadSavedConnections();
+
+    if (failedCount > 0) {
+      toast({
+        title: 'Bulk Copy Completed',
+        description: `${successCount} copied, ${failedCount} failed.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    toast({
+      title: 'Connections Copied',
+      description: `${successCount} connection${successCount === 1 ? '' : 's'} copied successfully.`,
+    });
+  };
+
+  const handleBulkDeleteConnections = async () => {
+    if (selectedConnectionIds.size === 0) return;
+
+    setBulkActionInProgress(true);
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const connId of Array.from(selectedConnectionIds)) {
+      const { error } = await connectionsApi.delete(connId);
+      if (error) failedCount += 1;
+      else successCount += 1;
+    }
+
+    setBulkActionInProgress(false);
+    setBulkDeleteDialogOpen(false);
+    setSelectedConnectionIds(new Set());
+    if (connectionId && !savedConnections.some((conn) => conn.id === connectionId && !selectedConnectionIds.has(conn.id))) {
+      setConnectionId(null);
+      setDatabaseTree([]);
+    }
+    await loadSavedConnections();
+    onConnectionDeleted?.();
+
+    if (failedCount > 0) {
+      toast({
+        title: 'Bulk Delete Completed',
+        description: `${successCount} deleted, ${failedCount} failed.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    toast({
+      title: 'Connections Deleted',
+      description: `${successCount} connection${successCount === 1 ? '' : 's'} deleted successfully.`,
+    });
+  };
 
   const renderConnectionDetails = (conn: any) => {
     if (loadingDatabases && connectionId === conn.id) {
@@ -1461,43 +1578,113 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     return null;
   };
 
+  const formatCreatedAt = (value: string | null | undefined) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleDateString();
+  };
+
   return (
     <>
       <div className="space-y-6">
         {/* Saved Connections List */}
         <div>
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
+          <div className="mb-4 space-y-3">
+            <div className="min-w-0">
               <h3 className="text-lg font-semibold">Saved Connections</h3>
-              <p className="text-xs text-muted-foreground">Manage and reuse database endpoints for ETL validation and execution.</p>
+              <p className="text-sm text-muted-foreground">Manage and reuse database endpoints for ETL validation and execution.</p>
             </div>
-            <div className="flex items-center gap-2">
-              <Button onClick={() => {
-                setShowNewForm(!showNewForm);
-                if (!showNewForm) {
-                  setEditingConnectionId(null);
-                  resetAllForms();
-                }
-              }} className="h-9">
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!showNewForm && savedConnections.length > 0 && (
+                <div className="relative w-full sm:w-72">
+                  <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="h-9 pl-8 pr-8"
+                    placeholder="Search by name, type, host, instance..."
+                    value={connectionSearchTerm}
+                    onChange={(e) => setConnectionSearchTerm(e.target.value)}
+                  />
+                  {connectionSearchTerm && (
+                    <button
+                      type="button"
+                      onClick={() => setConnectionSearchTerm('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-foreground/60 hover:text-foreground"
+                      aria-label="Clear search"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {!showNewForm && savedConnections.length > 0 && (
+                <Select value={connectionSortBy} onValueChange={(value: any) => setConnectionSortBy(value)}>
+                  <SelectTrigger className="h-9 w-full sm:w-[170px]">
+                    <SelectValue placeholder="Sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="newest">Newest first</SelectItem>
+                    <SelectItem value="oldest">Oldest first</SelectItem>
+                    <SelectItem value="name_asc">Name A-Z</SelectItem>
+                    <SelectItem value="name_desc">Name Z-A</SelectItem>
+                    <SelectItem value="type_asc">Type A-Z</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+
+              <Button
+                onClick={() => {
+                  setShowNewForm(!showNewForm);
+                  if (!showNewForm) {
+                    setEditingConnectionId(null);
+                    resetAllForms();
+                  }
+                }}
+                className="h-9 sm:ml-auto"
+              >
                 {showNewForm ? 'Cancel' : 'Add New Connection'}
               </Button>
             </div>
+
+            {!showNewForm && savedConnections.length > 0 && selectedConnectionIds.size > 0 && (
+              <div className="inline-flex w-fit flex-wrap items-center gap-1.5 rounded-lg border border-border/80 bg-background px-2 py-1.5 text-sm text-muted-foreground shadow-sm">
+                <span className="rounded-md bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground/80">
+                  {selectedConnectionIds.size} selected
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 rounded-md px-3 text-sm text-foreground/85 hover:bg-muted hover:text-foreground"
+                  disabled={bulkActionInProgress}
+                  onClick={handleBulkDuplicateConnections}
+                >
+                  Copy
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 rounded-md px-3 text-sm text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  disabled={bulkActionInProgress}
+                  onClick={() => setBulkDeleteDialogOpen(true)}
+                >
+                  Delete
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 rounded-md px-3 text-sm text-foreground/85 hover:bg-muted hover:text-foreground"
+                  onClick={() => setSelectedConnectionIds(new Set())}
+                >
+                  Clear
+                </Button>
+              </div>
+            )}
           </div>
 
           {!showNewForm && (
             <div className="space-y-4">
-              {/* Embedded AI for creating new connection */}
-              <Card className="border-2 border-dashed bg-muted/20 p-4 shadow-none">
-                <div className="flex flex-col gap-2">
-                  <Label className="text-sm text-muted-foreground">Describe a connection to create it instantly</Label>
-                  <AIInput
-                    placeholder="e.g., 'Create a MySQL connection to localhost named Local DB'"
-                    onGenerate={handleAIGenerate}
-                    isLoading={generating}
-                  />
-                </div>
-              </Card>
-
               {savedConnections.length === 0 ? (
                 <Card className="p-8 text-center">
                   <Database className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
@@ -1506,119 +1693,86 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
                 </Card>
               ) : (
                 <div className="space-y-4">
-                  <Card className="border-border/80 p-3 shadow-sm">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                      <div className="relative w-full lg:max-w-md">
-                        <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                        <Input
-                          className="h-8 pl-8 pr-8"
-                          placeholder="Search connections by name, type, host, or instance..."
-                          value={connectionSearchTerm}
-                          onChange={(e) => setConnectionSearchTerm(e.target.value)}
-                        />
-                        {connectionSearchTerm && (
-                          <button
-                            type="button"
-                            onClick={() => setConnectionSearchTerm('')}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            aria-label="Clear search"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="whitespace-nowrap text-xs text-muted-foreground">
-                          {filteredConnections.length} of {savedConnections.length}
-                        </span>
-                        <Select value={String(connectionsPerPage)} onValueChange={(value) => setConnectionsPerPage(Number(value))}>
-                          <SelectTrigger className="h-8 w-[108px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="12">12 / page</SelectItem>
-                            <SelectItem value="24">24 / page</SelectItem>
-                            <SelectItem value="48">48 / page</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 px-2"
-                          disabled={currentConnectionsPage <= 1}
-                          onClick={() => setCurrentConnectionsPage((prev) => Math.max(1, prev - 1))}
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 px-2"
-                          disabled={currentConnectionsPage >= totalConnectionsPages}
-                          onClick={() => setCurrentConnectionsPage((prev) => Math.min(totalConnectionsPages, prev + 1))}
-                        >
-                          <ChevronRight className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </Card>
-
                   {filteredConnections.length === 0 ? (
-                    <Card className="p-6 text-center">
+                    <Card className="border-border/80 p-6 text-center">
                       <p className="text-sm font-medium">No connections match your search.</p>
-                      <p className="text-xs text-muted-foreground mt-1">Try a different term or clear the current filter.</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Try a different term or clear the current filter.</p>
                     </Card>
                   ) : (
-                    <>
-                      <div className="space-y-2 lg:hidden">
-                        <div className="grid grid-cols-[1.2fr_1fr_auto] items-center rounded-md border bg-muted/30 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          <span>Name</span>
-                          <span>Type / Host</span>
-                          <span className="text-right">Actions</span>
-                        </div>
-                        {paginatedConnections.map((conn) => (
-                          <Card key={conn.id} className="border-border/80 p-3 shadow-sm">
-                            <div className="space-y-2">
-                              <div className="grid grid-cols-[1.2fr_1fr_auto] items-start gap-2">
-                                <div className="min-w-0">
-                                  <h3 className="truncate text-sm font-semibold" title={conn.name}>{conn.name}</h3>
-                                </div>
-                                <p className="truncate text-xs text-muted-foreground" title={`${conn.type.toUpperCase()} - ${conn.host}${conn.instance ? '\\' + conn.instance : ''}`}>
-                                  {conn.type.toUpperCase()} - {conn.host}
-                                  {conn.instance && `\\${conn.instance}`}
-                                </p>
-                                <div className="justify-self-end">{renderConnectionActions(conn)}</div>
-                              </div>
-                              {connectionId === conn.id && renderConnectionDetails(conn)}
-                            </div>
-                          </Card>
-                        ))}
+                    <Card className="overflow-hidden border-border shadow-sm bg-card">
+                      <div className="hidden md:grid grid-cols-[minmax(240px,2.6fr)_minmax(90px,0.9fr)_minmax(180px,2fr)_minmax(180px,2fr)_minmax(100px,1fr)_132px] items-center border-b bg-muted/65 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-foreground/85">
+                        <span className="flex items-center gap-2">
+                          {selectedConnectionIds.size > 0 && (
+                            <Checkbox
+                              checked={allPageConnectionsSelected ? true : (somePageConnectionsSelected ? 'indeterminate' : false)}
+                              onCheckedChange={(checked) => toggleSelectAllOnPage(checked === true)}
+                              aria-label="Select all on page"
+                            />
+                          )}
+                          Name
+                        </span>
+                        <span>Type</span>
+                        <span>Host / Instance</span>
+                        <span>Database</span>
+                        <span>Created</span>
+                        <span className="text-right">Actions</span>
                       </div>
+                      <div className="divide-y divide-border/90">
+                        {paginatedConnections.map((conn) => (
+                          <div key={conn.id} className="group px-3 py-1 transition-colors hover:bg-muted/40">
+                            <div className="hidden md:grid md:grid-cols-[minmax(240px,2.6fr)_minmax(90px,0.9fr)_minmax(180px,2fr)_minmax(180px,2fr)_minmax(100px,1fr)_132px] md:items-center md:gap-2">
+                              <span className="flex min-w-0 items-center gap-2 truncate text-[13px] font-normal leading-5" title={conn.name}>
+                                <Checkbox
+                                  checked={selectedConnectionIds.has(conn.id)}
+                                  onCheckedChange={(checked) => toggleConnectionSelection(conn.id, checked === true)}
+                                  aria-label={`Select ${conn.name}`}
+                                  className={selectedConnectionIds.size > 0 || selectedConnectionIds.has(conn.id)
+                                    ? "opacity-100"
+                                    : "opacity-0 group-hover:opacity-100 transition-opacity"}
+                                />
+                                <span className="truncate">{conn.name}</span>
+                              </span>
+                              <span className="truncate text-[13px] text-foreground/90 uppercase leading-5">{conn.type || '-'}</span>
+                              <span className="truncate text-[13px] text-foreground/90 leading-5" title={`${conn.host || ''}${conn.instance ? `\\${conn.instance}` : ''}`}>
+                                {conn.host || '-'}
+                                {conn.instance ? `\\${conn.instance}` : ''}
+                              </span>
+                              <span className="truncate text-[13px] text-foreground/90 leading-5" title={conn.database || '-'}>{conn.database || '-'}</span>
+                              <span className="text-[13px] text-foreground/90 leading-5">{formatCreatedAt(conn.created_at)}</span>
+                              <div className="justify-self-end">{renderConnectionActions(conn)}</div>
+                            </div>
 
-                      <div className="hidden gap-4 lg:grid lg:grid-cols-2 xl:grid-cols-3">
-                        {paginatedConnections.map((conn) => (
-                          <Card key={conn.id} className="flex flex-col border-border/80 p-4 shadow-sm transition-shadow hover:shadow-md">
-                            <div className="mb-3 flex items-start justify-between">
-                              <div className="min-w-0 flex-1">
-                                <h3 className="truncate text-base font-semibold" title={conn.name}>{conn.name}</h3>
-                                <p className="mt-0.5 truncate text-xs text-muted-foreground" title={`${conn.type.toUpperCase()} - ${conn.host}${conn.instance ? '\\' + conn.instance : ''}`}>
-                                  {conn.type.toUpperCase()} - {conn.host}
-                                  {conn.instance && `\\${conn.instance}`}
+                            <div className="md:hidden flex items-start justify-between gap-3 py-0">
+                              <div className="min-w-0">
+                                <div className="mb-0.5 flex items-center gap-2">
+                                  {selectedConnectionIds.size > 0 && (
+                                    <Checkbox
+                                      checked={selectedConnectionIds.has(conn.id)}
+                                      onCheckedChange={(checked) => toggleConnectionSelection(conn.id, checked === true)}
+                                      aria-label={`Select ${conn.name}`}
+                                    />
+                                  )}
+                                  <h4 className="truncate text-[13px] font-normal leading-5" title={conn.name}>{conn.name}</h4>
+                                </div>
+                                <p className="truncate text-[13px] text-foreground/90 leading-5" title={`${(conn.type || '').toUpperCase()} | ${conn.host || '-'}${conn.instance ? `\\${conn.instance}` : ''}`}>
+                                  {(conn.type || '').toUpperCase()} | {conn.host || '-'}{conn.instance ? `\\${conn.instance}` : ''}
                                 </p>
                               </div>
+                              {renderConnectionActions(conn)}
                             </div>
-                            {renderConnectionActions(conn)}
-                            {renderConnectionDetails(conn)}
-                          </Card>
+
+                            {connectionId === conn.id && (
+                              <div className="mt-2">{renderConnectionDetails(conn)}</div>
+                            )}
+                          </div>
                         ))}
                       </div>
-                    </>
+                    </Card>
                   )}
 
                   {filteredConnections.length > 0 && (
                     <div className="flex flex-col gap-2 pt-1 md:flex-row md:items-center md:justify-between">
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-sm text-muted-foreground">
                         Page {currentConnectionsPage} of {totalConnectionsPages}
                       </p>
                       <div className="flex items-center gap-1 flex-wrap">
@@ -2207,6 +2361,23 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         )}
       </div >
 
+      <AlertDialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Selected Connections</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete {selectedConnectionIds.size} selected connection{selectedConnectionIds.size === 1 ? '' : 's'}? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkActionInProgress}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleBulkDeleteConnections} disabled={bulkActionInProgress}>
+              {bulkActionInProgress ? 'Deleting...' : 'Delete Selected'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -2232,3 +2403,5 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
     </>
   );
 }
+
+

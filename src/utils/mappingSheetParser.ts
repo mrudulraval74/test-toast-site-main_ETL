@@ -27,6 +27,44 @@ export interface ParsedMappingSheet {
     };
 }
 
+const PLACEHOLDER_TOKENS = new Set([
+    '', '-', '--', 'na', 'n/a', 'none', 'null', 'nil', 'unknown', 'tbd', 'to be decided',
+    'to be confirmed', 'to be determined', 'not applicable', 'none selected'
+]);
+
+function normalizeToken(value: any): string {
+    return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isPlaceholderValue(value: any): boolean {
+    const normalized = normalizeToken(value);
+    if (!normalized) return true;
+    if (PLACEHOLDER_TOKENS.has(normalized)) return true;
+    if (/^column[_\s-]?\d+$/i.test(normalized)) return true;
+    if (/^(source|target|field|column)$/i.test(normalized)) return true;
+    return false;
+}
+
+function cleanIdentifier(value: any): string {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    return raw
+        .replace(/^[:=]+|[:=]+$/g, '')
+        .replace(/^\[|\]$/g, '')
+        .replace(/^["']|["']$/g, '')
+        .trim();
+}
+
+function resolveCandidateColumn(value: any): string {
+    const cleaned = cleanIdentifier(value);
+    if (!cleaned) return '';
+
+    // Extract trailing identifier from `db.schema.table.column` / `table.column`
+    const direct = cleaned.match(/([a-zA-Z_][a-zA-Z0-9_]*)(\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*))?$/);
+    if (direct) return cleanIdentifier(direct[3] || direct[1]);
+    return cleaned;
+}
+
 /**
  * Intelligently parses any mapping sheet format with Extreme Intelligence
  */
@@ -171,6 +209,7 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
     }
 
     const mappings: ColumnMapping[] = [];
+    const dedupe = new Set<string>();
     const sourceTables = new Set<string>();
     const targetTables = new Set<string>();
     const transformationRules: string[] = [];
@@ -198,7 +237,10 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         let targetValue = isEnterpriseFormat ? cleanVal(row[columns[13]]) : (targetCol ? cleanVal(row[targetCol]) : null);
         let transformValue = isEnterpriseFormat ? cleanVal(row[columns[17]]) : (transformCol ? cleanVal(row[transformCol]) : null);
 
-        if (!sourceValue && !targetValue) return;
+        const normalizedSource = resolveCandidateColumn(sourceValue);
+        const normalizedTarget = resolveCandidateColumn(targetValue);
+        if (!normalizedSource || !normalizedTarget) return;
+        if (isPlaceholderValue(normalizedSource) || isPlaceholderValue(normalizedTarget)) return;
 
         let rowSourceTable: string | undefined;
         let rowTargetTable: string | undefined;
@@ -245,9 +287,13 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         const transformType = detectTransformationType(transformValue);
         const complexity = assessComplexity(transformValue);
 
+        const dedupeKey = `${rowSourceTable || ''}|${rowTargetTable || ''}|${normalizedSource.toLowerCase()}|${normalizedTarget.toLowerCase()}`;
+        if (dedupe.has(dedupeKey)) return;
+        dedupe.add(dedupeKey);
+
         mappings.push({
-            sourceColumn: String(sourceValue || targetValue || `Column_${idx + 1}`).trim(),
-            targetColumn: String(targetValue || sourceValue || `Column_${idx + 1}`).trim(),
+            sourceColumn: normalizedSource,
+            targetColumn: normalizedTarget,
             sourceTable: rowSourceTable,
             targetTable: rowTargetTable,
             transformationType: transformType,
@@ -309,12 +355,12 @@ function parseMultiSourceFormat(data: any[], columns: string[]): ParsedMappingSh
     targetTables.add('Target Warehouse');
 
     data.forEach(row => {
-        const targetValue = row[targetCol];
-        if (!targetValue) return;
+        const targetValue = resolveCandidateColumn(row[targetCol]);
+        if (!targetValue || isPlaceholderValue(targetValue)) return;
 
         potentialSourceCols.forEach(sourceCol => {
-            const sourceValue = row[sourceCol];
-            if (sourceValue && String(sourceValue).trim() !== '') {
+            const sourceValue = resolveCandidateColumn(row[sourceCol]);
+            if (sourceValue && !isPlaceholderValue(sourceValue)) {
                 const transformType = detectTransformationFromValue(sourceValue);
 
                 mappings.push({
@@ -405,33 +451,19 @@ function parseVerticalFormat(data: any[], columns: string[]): ParsedMappingSheet
  * Strategy 5: Generic Format (fallback - try to extract any useful info)
  */
 function parseGenericFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
-    const mappings: ColumnMapping[] = [];
     const sourceTables = new Set<string>();
     const targetTables = new Set<string>();
-
-    // Just map all columns generically
-    columns.forEach((col, idx) => {
-        mappings.push({
-            sourceColumn: col,
-            targetColumn: col,
-            transformationType: 'direct_move',
-            complexity: 'simple'
-        });
-    });
-
-    sourceTables.add('[Auto-detected from sheet structure]');
-    targetTables.add('[Configure target table]');
 
     return {
         sourceTables,
         targetTables,
-        columnMappings: mappings,
-        detectedFormat: 'Generic (Auto-detected column structure)',
+        columnMappings: [],
+        detectedFormat: 'Generic (Uncertain format)',
         transformationRules: [],
         metadata: {
             totalRows: data.length,
             detectedColumns: columns,
-            formatConfidence: 0.3
+            formatConfidence: 0.05
         }
     };
 }

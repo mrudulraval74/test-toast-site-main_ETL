@@ -107,6 +107,27 @@ function isUsableColumnName(columnName: string | undefined | null): boolean {
     return true;
 }
 
+function normalizeIdentifier(value: string | undefined | null): string {
+    if (!value) return '';
+    const cleaned = String(value).trim().replace(/^[\[\]`"]+|[\[\]`"]+$/g, '');
+    if (!cleaned) return '';
+    const parts = cleaned.split('.').map(p => p.trim()).filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : cleaned;
+}
+
+function makeSafeAlias(base: string, used: Set<string>, fallback: string): string {
+    const normalized = normalizeIdentifier(base).replace(/[^a-zA-Z0-9_]/g, '_');
+    const seed = normalized || fallback;
+    let alias = seed;
+    let i = 2;
+    while (used.has(alias.toLowerCase())) {
+        alias = `${seed}_${i}`;
+        i += 1;
+    }
+    used.add(alias.toLowerCase());
+    return alias;
+}
+
 export function generateMappingSpecificTests(
     mappingData: any[],
     sourceSchema?: DatabaseSchema | null,
@@ -169,9 +190,9 @@ export function generateMappingSpecificTests(
 
     console.log(`✅ Validated mappings count: ${validatedMappings.length}`);
 
-    // Group mappings by unique table pairs (Enhanced to handle multiple sources)
+    // Group mappings by exact source-target pair for better SQL accuracy.
     const tablePairs = new Map<string, {
-        sourceTables: string[]; // Changed to array
+        sourceTable: string;
         targetTable: string;
         mappings: any[];
     }>();
@@ -179,14 +200,11 @@ export function generateMappingSpecificTests(
     validatedMappings.forEach(m => {
         const sTab = m.sourceTable || defaultSourceTable;
         const tTab = m.targetTable || defaultTargetTable;
-        const key = `${tTab}`; // Group by target table primarily
+        const key = `${sTab}=>${tTab}`;
         if (!tablePairs.has(key)) {
-            tablePairs.set(key, { sourceTables: [], targetTable: tTab, mappings: [] });
+            tablePairs.set(key, { sourceTable: sTab, targetTable: tTab, mappings: [] });
         }
         const pair = tablePairs.get(key)!;
-        if (!pair.sourceTables.includes(sTab)) {
-            pair.sourceTables.push(sTab);
-        }
         pair.mappings.push(m);
     });
 
@@ -219,23 +237,39 @@ export function generateMappingSpecificTests(
         if (!name) return '';
         return name.split('.').map(p => quoteId(p.trim(), targetDialect)).filter(Boolean).join('.');
     };
+    const quoteSourceColumn = (name: string) => quoteId(normalizeIdentifier(name), sourceDialect);
+    const quoteTargetColumn = (name: string) => quoteId(normalizeIdentifier(name), targetDialect);
+
+    const buildBusinessRuleExpression = (logicValue: any, sourceColExpr: string) => {
+        const raw = String(logicValue || '').trim();
+        if (!raw || isDirectMove(raw)) return sourceColExpr;
+        const upper = raw.toUpperCase();
+
+        // Simple but reliable rules only; unknown rules fallback to direct source expression.
+        if (upper.includes('UPPER')) return `UPPER(${sourceColExpr})`;
+        if (upper.includes('LOWER')) return `LOWER(${sourceColExpr})`;
+        if (upper.includes('LTRIM') && upper.includes('RTRIM')) return `LTRIM(RTRIM(${sourceColExpr}))`;
+        if (upper.includes('TRIM')) return `TRIM(${sourceColExpr})`;
+
+        const coalesceMatch = raw.match(/(?:COALESCE|ISNULL|NVL)\s*\(\s*[^,]+,\s*([^)]+)\)/i);
+        if (coalesceMatch?.[1]) return `COALESCE(${sourceColExpr}, ${coalesceMatch[1].trim()})`;
+
+        const castMatch = raw.match(/CAST\s*\(\s*[^)]+\s+AS\s+([^)]+)\)/i);
+        if (castMatch?.[1]) return `CAST(${sourceColExpr} AS ${castMatch[1].trim()})`;
+
+        const roundMatch = raw.match(/ROUND\s*\(\s*[^,]+,\s*(\d+)\s*\)/i);
+        if (roundMatch?.[1]) return `ROUND(${sourceColExpr}, ${roundMatch[1]})`;
+
+        return sourceColExpr;
+    };
 
 
     // --- PHASE 3: TEST GENERATION PER TABLE PAIR ---
     tablePairs.forEach((pair) => {
-        const { sourceTables, targetTable, mappings } = pair;
+        const { sourceTable, targetTable, mappings } = pair;
+        const qSrc = quoteSource(sourceTable);
         const qTgt = quoteTarget(targetTable);
-        const qSrcs = sourceTables.map(s => quoteSource(s));
-
-        // Use first source for phase detection
-        const phase = getPhasePrefix(sourceTables[0], targetTable);
-
-        // Multi-source SQL helper
-        const getMultiSourceSQL = (columns: string[], alias: string = 's') => {
-            if (qSrcs.length === 1) return `SELECT ${columns.join(', ')} FROM ${qSrcs[0]} ${alias}`;
-            // If multiple sources, union them
-            return qSrcs.map(qs => `SELECT ${columns.join(', ')} FROM ${qs}`).join(' UNION ALL ');
-        };
+        const phase = getPhasePrefix(sourceTable, targetTable);
 
         // 1. Structure Validation (Target vs Mapping Sheet) remained same...
         const generateMappingTruthSQL = (mapEntries: any[]) => {
@@ -265,10 +299,8 @@ export function generateMappingSpecificTests(
         // 2. Count Validation (Sources vs Target)
         testCases.push({
             name: `${phase} | 2. Count Validation | ${targetTable}`,
-            description: `Verify record count parity between ${sourceTables.join(' + ')} and ${targetTable}`,
-            sourceSQL: qSrcs.length === 1
-                ? `SELECT COUNT(*) as TotalRecords FROM ${qSrcs[0]}`
-                : `SELECT SUM(TotalRecords) as TotalRecords FROM (${qSrcs.map(qs => `SELECT COUNT(*) as TotalRecords FROM ${qs}`).join(' UNION ALL ')}) as all_src`,
+            description: `Verify record count parity between ${sourceTable} and ${targetTable}`,
+            sourceSQL: `SELECT COUNT(*) as TotalRecords FROM ${qSrc}`,
             targetSQL: `SELECT COUNT(*) as TotalRecords FROM ${qTgt}`,
             expectedResult: 'Row counts must be identical between sources and target.',
             category: 'general',
@@ -276,15 +308,15 @@ export function generateMappingSpecificTests(
         });
 
         // 3. Null Data Validation (Sources vs Target)
-        const firstCol = mappings.find(m => isUsableColumnName(m.sourceColumn))?.sourceColumn;
-        if (firstCol) {
+        const firstMapped = mappings.find(m => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
+        if (firstMapped) {
+            const sourceNullCol = quoteSourceColumn(resolveColumnName(sourceSchema, sourceTable, firstMapped.sourceColumn));
+            const targetNullCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMapped.targetColumn));
             testCases.push({
                 name: `${phase} | 3. Null Data Validation | ${targetTable}`,
-                description: `Verify the null count between the sources and target for mapped columns (e.g., ${firstCol}).`,
-                sourceSQL: qSrcs.length === 1
-                    ? `SELECT count(*) as NullCount FROM ${qSrcs[0]} WHERE ${quoteSource(firstCol)} IS NULL`
-                    : `SELECT SUM(NullCount) as NullCount FROM (${qSrcs.map(qs => `SELECT count(*) as NullCount FROM ${qs} WHERE ${quoteSource(firstCol)} IS NULL`).join(' UNION ALL ')}) as all_src`,
-                targetSQL: `SELECT count(*) as NullCount FROM ${qTgt} WHERE ${quoteTarget(mappings.find(m => isUsableColumnName(m.targetColumn))?.targetColumn || firstCol)} IS NULL`,
+                description: `Verify null-count parity for mapped column ${firstMapped.sourceColumn} -> ${firstMapped.targetColumn}.`,
+                sourceSQL: `SELECT COUNT(*) as NullCount FROM ${qSrc} WHERE ${sourceNullCol} IS NULL`,
+                targetSQL: `SELECT COUNT(*) as NullCount FROM ${qTgt} WHERE ${targetNullCol} IS NULL`,
                 expectedResult: 'Null counts for mapped columns should be identical.',
                 category: 'general',
                 severity: 'major'
@@ -297,17 +329,17 @@ export function generateMappingSpecificTests(
 
         // Try to find Primary Keys from schema, but ONLY if they are mapped
         // Note: For multi-source, we check the first source's schema as a heuristic
-        const tableInfo = findTableInSchema(sourceSchema, sourceTables[0]);
+        const tableInfo = findTableInSchema(sourceSchema, sourceTable);
         if (tableInfo?.primaryKey && tableInfo.primaryKey.length > 0) {
             const mappedPks = tableInfo.primaryKey.filter(pk =>
-                mappings.some(m => m.sourceColumn === pk)
+                mappings.some(m => normalizeIdentifier(m.sourceColumn).toLowerCase() === normalizeIdentifier(pk).toLowerCase())
             );
 
             if (mappedPks.length > 0) {
                 pkSrc = mappedPks;
                 pkTgt = pkSrc.map(s => {
-                    const map = mappings.find(m => m.sourceColumn === s);
-                    return map ? map.targetColumn : s;
+                    const map = mappings.find(m => normalizeIdentifier(m.sourceColumn).toLowerCase() === normalizeIdentifier(s).toLowerCase());
+                    return map ? (map.targetColumn || s) : s;
                 });
             }
         }
@@ -319,15 +351,13 @@ export function generateMappingSpecificTests(
             pkTgt = [firstValidMap?.targetColumn || 'ID'];
         }
 
-        const sKeyList = pkSrc.map(c => quoteSource(c)).join(', ');
-        const tKeyList = pkTgt.map(c => quoteTarget(c)).join(', ');
+        const sKeyList = pkSrc.map(c => quoteSourceColumn(c)).join(', ');
+        const tKeyList = pkTgt.map(c => quoteTargetColumn(c)).join(', ');
 
         testCases.push({
             name: `${phase} | 4. Duplicate Data Validation | ${targetTable}`,
             description: `Verify uniqueness in ${targetTable} based on keys: ${tKeyList}`,
-            sourceSQL: qSrcs.length === 1
-                ? `SELECT ${sKeyList}, COUNT(*) as duplicate_Count FROM ${qSrcs[0]} GROUP BY ${sKeyList} HAVING COUNT(*) > 1`
-                : `SELECT ${sKeyList}, SUM(duplicate_Count) as duplicate_Count FROM (${qSrcs.map(qs => `SELECT ${sKeyList}, COUNT(*) as duplicate_Count FROM ${qs} GROUP BY ${sKeyList}`).join(' UNION ALL ')}) as all_src GROUP BY ${sKeyList} HAVING SUM(duplicate_Count) > 1`,
+            sourceSQL: `SELECT ${sKeyList}, COUNT(*) as duplicate_Count FROM ${qSrc} GROUP BY ${sKeyList} HAVING COUNT(*) > 1`,
             targetSQL: `SELECT ${tKeyList}, COUNT(*) as duplicate_Count FROM ${qTgt} GROUP BY ${tKeyList} HAVING COUNT(*) > 1`,
             expectedResult: 'No duplicate records should exist for the defined keys.',
             category: 'general',
@@ -353,22 +383,35 @@ export function generateMappingSpecificTests(
         // 6. Data Accuracy Validation
         // 6a. Consolidated Direct Moves (One test case for all direct columns)
         const direct = mappings.filter(m =>
-            isDirectMove(m.transformationLogic) || m.transformationType === 'direct_move'
+            (isDirectMove(m.transformationLogic) || m.transformationType === 'direct_move')
+            && isUsableColumnName(m.sourceColumn)
+            && isUsableColumnName(m.targetColumn)
         );
 
         if (direct.length > 0) {
-            const sCols = direct.map(m => `s.${quoteSource(resolveColumnName(sourceSchema, sourceTables[0], m.sourceColumn))}`);
-            const tCols = direct.map(m => `t.${quoteTarget(resolveColumnName(targetSchema, targetTable, m.targetColumn))}`);
-            const ordSrc = pkSrc.map(k => `s.${quoteSource(k)}`).join(', ');
-            const ordTgt = pkTgt.map(k => `t.${quoteTarget(k)}`).join(', ');
+            const usedAliases = new Set<string>();
+            const keyAliases = pkSrc.map((_, idx) => `__key_${idx + 1}`);
+            const sourceKeySelect = pkSrc.map((k, idx) => `s.${quoteSourceColumn(k)} AS ${quoteSourceColumn(keyAliases[idx])}`);
+            const targetKeySelect = pkTgt.map((k, idx) => `t.${quoteTargetColumn(k)} AS ${quoteTargetColumn(keyAliases[idx])}`);
 
-            const srcSelect = `${pkSrc.map(k => `s.${quoteSource(k)}`).join(', ')}, ${sCols.join(', ')}`;
+            const mappedSelects = direct.map((m, idx) => {
+                const resolvedSrc = resolveColumnName(sourceSchema, sourceTable, m.sourceColumn);
+                const resolvedTgt = resolveColumnName(targetSchema, targetTable, m.targetColumn);
+                const alias = makeSafeAlias(m.targetColumn || `mapped_${idx + 1}`, usedAliases, `mapped_${idx + 1}`);
+                return {
+                    src: `s.${quoteSourceColumn(resolvedSrc)} AS ${quoteSourceColumn(alias)}`,
+                    tgt: `t.${quoteTargetColumn(resolvedTgt)} AS ${quoteTargetColumn(alias)}`
+                };
+            });
+
+            const orderSrc = keyAliases.map(k => quoteSourceColumn(k)).join(', ');
+            const orderTgt = keyAliases.map(k => quoteTargetColumn(k)).join(', ');
 
             testCases.push({
                 name: `${phase} | 6. Data Accuracy: Direct Moves (Consolidated) | ${targetTable}`,
                 description: `Validate ${direct.length} direct mappings for ${targetTable} in one pass.`,
-                sourceSQL: `${getMultiSourceSQL([srcSelect])} ORDER BY ${ordSrc}`,
-                targetSQL: `SELECT ${pkTgt.map(k => `t.${quoteTarget(k)}`).join(', ')}, ${tCols.join(', ')} FROM ${qTgt} t ORDER BY ${ordTgt}`,
+                sourceSQL: `SELECT ${[...sourceKeySelect, ...mappedSelects.map(m => m.src)].join(', ')} FROM ${qSrc} s ORDER BY ${orderSrc}`,
+                targetSQL: `SELECT ${[...targetKeySelect, ...mappedSelects.map(m => m.tgt)].join(', ')} FROM ${qTgt} t ORDER BY ${orderTgt}`,
                 expectedResult: 'All direct move values should match exactly.',
                 category: 'direct_move',
                 severity: 'critical'
@@ -377,31 +420,29 @@ export function generateMappingSpecificTests(
 
         // 6b. Separate Business Rule Validation (one test per transformation)
         const rules = mappings.filter(m =>
-            !isDirectMove(m.transformationLogic) && m.transformationType !== 'direct_move'
+            !isDirectMove(m.transformationLogic)
+            && m.transformationType !== 'direct_move'
+            && isUsableColumnName(m.sourceColumn)
+            && isUsableColumnName(m.targetColumn)
         );
 
         rules.forEach(m => {
-            const sCol = resolveColumnName(sourceSchema, sourceTables[0], m.sourceColumn);
+            const sCol = resolveColumnName(sourceSchema, sourceTable, m.sourceColumn);
             const tCol = resolveColumnName(targetSchema, targetTable, m.targetColumn);
-
-            const getExpr = (mapping: any, col: string): string => {
-                const logic = (mapping.transformationLogic || '').trim().toUpperCase();
-                if (logic.includes('UPPER')) return `UPPER(s.${quoteSource(col)})`;
-                if (logic.includes('LOWER')) return `LOWER(s.${quoteSource(col)})`;
-                if (logic.includes('TRIM')) return `LTRIM(RTRIM(s.${quoteSource(col)}))`;
-                return `s.${quoteSource(col)}`;
-            };
-
-            const ordSrc = pkSrc.map(k => `s.${quoteSource(k)}`).join(', ');
-            const ordTgt = pkTgt.map(k => `t.${quoteTarget(k)}`).join(', ');
-            const alias = m.targetColumn.replace(/[^a-zA-Z0-9_]/g, '_');
-            const srcSelect = `${pkSrc.map(k => `s.${quoteSource(k)}`).join(', ')}, ${getExpr(m, sCol)} AS ${quoteSource(alias)}`;
+            const usedAliases = new Set<string>();
+            const keyAliases = pkSrc.map((_, idx) => `__key_${idx + 1}`);
+            const sourceKeySelect = pkSrc.map((k, idx) => `s.${quoteSourceColumn(k)} AS ${quoteSourceColumn(keyAliases[idx])}`);
+            const targetKeySelect = pkTgt.map((k, idx) => `t.${quoteTargetColumn(k)} AS ${quoteTargetColumn(keyAliases[idx])}`);
+            const alias = makeSafeAlias(m.targetColumn || 'business_rule', usedAliases, 'business_rule');
+            const srcExpr = buildBusinessRuleExpression(m.transformationLogic, `s.${quoteSourceColumn(sCol)}`);
+            const orderSrc = keyAliases.map(k => quoteSourceColumn(k)).join(', ');
+            const orderTgt = keyAliases.map(k => quoteTargetColumn(k)).join(', ');
 
             testCases.push({
                 name: `${phase} | 6. Data Accuracy: Business Rule: ${m.targetColumn} | ${targetTable}`,
                 description: `Validating: [${m.targetColumn}]. Logic: ${m.transformationLogic}`,
-                sourceSQL: `${getMultiSourceSQL([srcSelect])} ORDER BY ${ordSrc}`,
-                targetSQL: `SELECT ${pkTgt.map(k => `t.${quoteTarget(k)}`).join(', ')}, t.${quoteTarget(tCol)} FROM ${qTgt} t ORDER BY ${ordTgt}`,
+                sourceSQL: `SELECT ${[...sourceKeySelect, `${srcExpr} AS ${quoteSourceColumn(alias)}`].join(', ')} FROM ${qSrc} s ORDER BY ${orderSrc}`,
+                targetSQL: `SELECT ${[...targetKeySelect, `t.${quoteTargetColumn(tCol)} AS ${quoteTargetColumn(alias)}`].join(', ')} FROM ${qTgt} t ORDER BY ${orderTgt}`,
                 expectedResult: 'Transformed values should match exactly as per business rule.',
                 category: 'business_rule',
                 severity: 'critical'

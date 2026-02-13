@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
     Download, Code, Database, FileCode, Copy, Play, Plus, Edit, Trash2,
-    CheckCircle, AlertTriangle, XCircle, Search, Settings, Sparkles
+    CheckCircle, XCircle, Search, Settings, Sparkles, ChevronDown, ChevronRight
 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -104,7 +103,8 @@ export function TestComparisonStep({
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [selectedTests, setSelectedTests] = useState<number[]>([]); // For bulk delete
     const [currentPage, setCurrentPage] = useState(1);
-    const [itemsPerPage, setItemsPerPage] = useState(8);
+    const itemsPerPage = 8;
+    const [expandedTests, setExpandedTests] = useState<number[]>([]);
     const [editForm, setEditForm] = useState<TestCase>({
         name: '',
         category: 'general',
@@ -144,21 +144,22 @@ export function TestComparisonStep({
         resetForm();
     };
 
-    const getCategoryBadge = (category?: string) => {
-        const badges = {
-            direct_move: <Badge className="bg-blue-500/10 text-blue-700 hover:bg-blue-500/20 border-blue-200">Direct Move</Badge>,
-            business_rule: <Badge className="bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 border-amber-200">Business Rule</Badge>,
-            transformation: <Badge className="bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 border-purple-200">Transformation</Badge>,
-            structure: <Badge className="bg-red-500/10 text-red-700 hover:bg-red-500/20 border-red-200">Structure</Badge>,
-            general: <Badge variant="outline" className="text-muted-foreground">General</Badge>
+    const getCategoryLabel = (category?: string) => {
+        const labels = {
+            direct_move: 'Direct Move',
+            business_rule: 'Business Rule',
+            transformation: 'Transformation',
+            structure: 'Structure',
+            general: 'General'
         };
-        return badges[category as keyof typeof badges] || badges.general;
+        return labels[category as keyof typeof labels] || labels.general;
     };
 
-    const getSeverityIcon = (severity?: string) => {
-        if (severity === 'critical') return <AlertTriangle className="h-3 w-3 text-red-500" />;
-        if (severity === 'major') return <AlertTriangle className="h-3 w-3 text-amber-500" />;
-        return <CheckCircle className="h-3 w-3 text-blue-500" />;
+    const getSeverityLabel = (severity?: string) => {
+        if (severity === 'critical') return 'Critical';
+        if (severity === 'major') return 'Major';
+        if (severity === 'minor') return 'Minor';
+        return 'Minor';
     };
 
     const testCases = analysis?.testCases || [];
@@ -189,7 +190,17 @@ export function TestComparisonStep({
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchTerm, itemsPerPage, testCases.length]);
+    }, [searchTerm, testCases.length]);
+
+    useEffect(() => {
+        setExpandedTests((prev) => prev.filter((idx) => idx < testCases.length));
+    }, [testCases.length]);
+
+    const toggleExpanded = (index: number) => {
+        setExpandedTests((prev) =>
+            prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
+        );
+    };
 
     // If we have no test cases at all, show the empty state with generate button
     const hasData = (analysis || uploadedFile) && testCases.length > 0;
@@ -218,54 +229,54 @@ export function TestComparisonStep({
     }
 
     return (
-        <div className="space-y-5">
+        <div className="space-y-4">
             <div className="space-y-1">
-                <h2 className="text-xl font-semibold sm:text-2xl">Test Comparison</h2>
+                <h2 className="text-lg font-semibold sm:text-xl">Test Comparison</h2>
                 <p className="text-sm text-muted-foreground">
                     Run and manage test cases for data comparison
                 </p>
             </div>
 
             {/* Execution Dashboard */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Card className="border-border/80 bg-card shadow-sm">
-                    <CardContent className="p-4 flex flex-col items-center justify-center text-center">
-                        <span className="text-muted-foreground text-xs uppercase font-semibold flex items-center gap-1">
+                    <CardContent className="flex flex-col items-center justify-center p-3 text-center">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold uppercase text-muted-foreground">
                             <Database className="h-3 w-3" /> Total Tests
                         </span>
-                        <span className="text-2xl font-bold mt-1">{stats.total}</span>
+                        <span className="mt-1 text-xl font-semibold">{stats.total}</span>
                     </CardContent>
                 </Card>
                 <Card className="border-emerald-200 bg-emerald-50/60 shadow-sm">
-                    <CardContent className="p-4 flex flex-col items-center justify-center text-center">
-                        <span className="text-green-700 text-xs uppercase font-semibold flex items-center gap-1">
+                    <CardContent className="flex flex-col items-center justify-center p-3 text-center">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold uppercase text-green-700">
                             <CheckCircle className="h-3 w-3" /> Passed
                         </span>
-                        <span className="text-2xl font-bold text-green-700 mt-1">{stats.passed}</span>
+                        <span className="mt-1 text-xl font-semibold text-green-700">{stats.passed}</span>
                     </CardContent>
                 </Card>
                 <Card className="border-rose-200 bg-rose-50/60 shadow-sm">
-                    <CardContent className="p-4 flex flex-col items-center justify-center text-center">
-                        <span className="text-red-700 text-xs uppercase font-semibold flex items-center gap-1">
+                    <CardContent className="flex flex-col items-center justify-center p-3 text-center">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold uppercase text-red-700">
                             <XCircle className="h-3 w-3" /> Failed
                         </span>
-                        <span className="text-2xl font-bold text-red-700 mt-1">{stats.failed}</span>
+                        <span className="mt-1 text-xl font-semibold text-red-700">{stats.failed}</span>
                     </CardContent>
                 </Card>
                 <Card className="border-blue-200 bg-blue-50/60 shadow-sm">
-                    <CardContent className="p-4 flex flex-col items-center justify-center text-center">
-                        <span className="text-blue-700 text-xs uppercase font-semibold flex items-center gap-1">
+                    <CardContent className="flex flex-col items-center justify-center p-3 text-center">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold uppercase text-blue-700">
                             <Settings className="h-3 w-3" /> Pending
                         </span>
-                        <span className="text-2xl font-bold text-blue-700 mt-1">{stats.pending}</span>
+                        <span className="mt-1 text-xl font-semibold text-blue-700">{stats.pending}</span>
                     </CardContent>
                 </Card>
             </div>
 
             {/* Header Actions */}
-            <div className="rounded-xl border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border bg-card p-3.5 shadow-sm">
                 <div className="mb-3">
-                    <h3 className="flex items-center gap-2 text-base font-semibold">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold">
                         <Code className="h-4 w-4 text-primary" />
                         Test Case Manager
                     </h3>
@@ -274,7 +285,7 @@ export function TestComparisonStep({
                         {selectedTests.length > 0 && <span className="text-primary font-semibold"> | {selectedTests.length} selected</span>}
                     </p>
                 </div>
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
                     <div className="relative w-full md:max-w-sm">
                         <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                         <Input
@@ -284,7 +295,7 @@ export function TestComparisonStep({
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
                     </div>
-                    <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                    <div className="flex w-full flex-wrap gap-2 md:w-auto">
                     {selectedTests.length > 0 && onSaveSelected && (
                         <Button
                             onClick={() => {
@@ -366,10 +377,10 @@ export function TestComparisonStep({
             </div>
 
             {/* Test Case List */}
-            <div className="grid grid-cols-1 gap-4">
+            <div className="grid grid-cols-1 gap-3">
                 {paginatedTestCases?.map(({ tc, index: realIndex }) => (
-                    <Card key={`${tc.name}-${realIndex}`} className="group border-border/80 transition-shadow hover:shadow-md">
-                        <CardHeader className="flex flex-row items-start justify-between space-y-0 border-b bg-muted/10 px-4 py-3">
+                    <Card key={`${tc.name}-${realIndex}`} className="group border-border/80 transition-shadow hover:shadow-sm">
+                        <CardHeader className="flex flex-row items-start justify-between space-y-0 border-b bg-muted/5 px-3 py-2.5">
                             <div className="flex items-start gap-3 flex-1">
                                 <Checkbox
                                     checked={selectedTests.includes(realIndex)}
@@ -380,23 +391,44 @@ export function TestComparisonStep({
                                             setSelectedTests(selectedTests.filter(i => i !== realIndex));
                                         }
                                     }}
-                                    className="mt-1"
+                                    className={`mt-0.5 transition-opacity ${selectedTests.length > 0 || selectedTests.includes(realIndex) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                                 />
-                                <div className="flex flex-col gap-1 flex-1">
+                                <div className="flex flex-1 flex-col gap-1">
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-base font-semibold">{tc.name}</span>
-                                        {getCategoryBadge(tc.category)}
-                                        <Badge variant="outline" className={`text-xs gap-1 border-dashed ${tc.severity === 'critical' ? 'text-red-600 border-red-200 bg-red-50' : 'text-muted-foreground'}`}>
-                                            {getSeverityIcon(tc.severity)}
-                                            {tc.severity || 'minor'}
-                                        </Badge>
+                                        <Button
+                                            variant="ghost"
+                                            className="h-auto p-0 text-left hover:bg-transparent"
+                                            onClick={() => toggleExpanded(realIndex)}
+                                        >
+                                            {expandedTests.includes(realIndex) ? (
+                                                <ChevronDown className="mr-1 h-4 w-4 text-muted-foreground" />
+                                            ) : (
+                                                <ChevronRight className="mr-1 h-4 w-4 text-muted-foreground" />
+                                            )}
+                                            <span className="text-sm font-semibold text-foreground">{tc.name}</span>
+                                        </Button>
                                     </div>
-                                    <CardDescription className="text-xs">
+                                    {((tc.category && tc.category !== 'general') || tc.severity === 'critical' || tc.severity === 'major') && (
+                                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
+                                            {tc.category && tc.category !== 'general' && (
+                                                <span>{getCategoryLabel(tc.category)}</span>
+                                            )}
+                                            {tc.category && tc.category !== 'general' && (tc.severity === 'critical' || tc.severity === 'major') && (
+                                                <span className="text-muted-foreground/40">|</span>
+                                            )}
+                                            {(tc.severity === 'critical' || tc.severity === 'major') && (
+                                                <span className={tc.severity === 'critical' ? 'text-red-500/90' : 'text-amber-600/90'}>
+                                                    {getSeverityLabel(tc.severity)}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                    <CardDescription className="text-xs text-muted-foreground/85">
                                         {tc.description}
                                     </CardDescription>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 group-hover:opacity-100">
                                 {onRunTest && (
                                     <Button
                                         size="sm"
@@ -421,11 +453,12 @@ export function TestComparisonStep({
                                 )}
                             </div>
                         </CardHeader>
-                        <CardContent className="py-2 px-4 pb-4">
+                        {expandedTests.includes(realIndex) && (
+                            <CardContent className="px-3 pb-3 pt-2">
                             {/* Execution Result Banner */}
                             {tc.lastRunResult && (
                                 <div className="space-y-2">
-                                    <div className={`mb-3 p-2 rounded-md border flex items-start gap-2 text-sm ${tc.lastRunResult.status === 'pass' ? 'bg-green-50/50 border-green-200 text-green-700' :
+                                    <div className={`mb-3 flex items-start gap-2 rounded-md border p-2 text-sm ${tc.lastRunResult.status === 'pass' ? 'bg-green-50/50 border-green-200 text-green-700' :
                                         tc.lastRunResult.status === 'fail' ? 'bg-red-50/50 border-red-200 text-red-700' :
                                             'bg-blue-50/50 border-blue-200 text-blue-700'
                                         }`}>
@@ -454,9 +487,9 @@ export function TestComparisonStep({
                                 </div>
                             )}
 
-                            <div className="mt-2 grid grid-cols-1 gap-4 text-sm">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="p-3 bg-blue-50/40 rounded-md border border-dashed border-blue-200">
+                            <div className="mt-2 grid grid-cols-1 gap-3 text-sm">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="rounded-md border border-dashed border-blue-200 bg-blue-50/40 p-2.5">
                                         <span className="text-xs font-semibold text-blue-700 uppercase flex items-center gap-1 mb-1">
                                             <Database className="h-3 w-3" /> Source Logic / Table
                                         </span>
@@ -464,7 +497,7 @@ export function TestComparisonStep({
                                             {tc.sourceSQL}
                                         </div>
                                     </div>
-                                    <div className="p-3 bg-purple-50/40 rounded-md border border-dashed border-purple-200">
+                                    <div className="rounded-md border border-dashed border-purple-200 bg-purple-50/40 p-2.5">
                                         <span className="text-xs font-semibold text-purple-700 uppercase flex items-center gap-1 mb-1">
                                             <Database className="h-3 w-3" /> Target Logic / Table
                                         </span>
@@ -473,8 +506,8 @@ export function TestComparisonStep({
                                         </div>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="p-3 bg-muted/40 rounded-md border border-dashed">
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div className="rounded-md border border-dashed bg-muted/40 p-2.5">
                                         <span className="text-xs font-semibold text-muted-foreground uppercase flex items-center gap-1 mb-1">
                                             <CheckCircle className="h-3 w-3" /> Expected Result
                                         </span>
@@ -482,7 +515,7 @@ export function TestComparisonStep({
                                             {tc.expectedResult}
                                         </p>
                                     </div>
-                                    <div className={`p-3 rounded-md border border-dashed ${tc.lastRunResult ? (tc.lastRunResult.status === 'pass' ? 'bg-green-50/50 border-green-200' : 'bg-red-50/50 border-red-200') : 'bg-muted/40 border-border'}`}>
+                                    <div className={`rounded-md border border-dashed p-2.5 ${tc.lastRunResult ? (tc.lastRunResult.status === 'pass' ? 'bg-green-50/50 border-green-200' : 'bg-red-50/50 border-red-200') : 'bg-muted/40 border-border'}`}>
                                         <span className="text-xs font-semibold text-muted-foreground uppercase flex items-center gap-1 mb-1">
                                             <FileCode className="h-3 w-3" /> Actual Result
                                         </span>
@@ -532,7 +565,8 @@ export function TestComparisonStep({
                                     </div>
                                 </div>
                             </div>
-                        </CardContent>
+                            </CardContent>
+                        )}
                     </Card>
                 ))}
             </div>
@@ -547,16 +581,6 @@ export function TestComparisonStep({
                         {filteredTestCases.length}
                     </div>
                     <div className="flex items-center gap-2">
-                        <Select value={String(itemsPerPage)} onValueChange={(value) => setItemsPerPage(Number(value))}>
-                            <SelectTrigger className="h-8 w-[108px]">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="8">8 / page</SelectItem>
-                                <SelectItem value="16">16 / page</SelectItem>
-                                <SelectItem value="24">24 / page</SelectItem>
-                            </SelectContent>
-                        </Select>
                         <Button
                             size="sm"
                             variant="outline"

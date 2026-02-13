@@ -258,7 +258,8 @@ export default function AIComparison() {
     const [selectedAgentId, setSelectedAgentId] = useState<string>("");
     const [loadingAgents, setLoadingAgents] = useState(false);
 
-    const fetchAgents = useCallback(async () => {
+    const fetchAgents = useCallback(async (options?: { silent?: boolean }) => {
+        const silent = options?.silent ?? false;
         setLoadingAgents(true);
         try {
             const { data, error } = await supabase
@@ -272,12 +273,20 @@ export default function AIComparison() {
             const nextAgents = (data || []) as Agent[];
             setAgents(nextAgents);
 
-            // Auto-select first active agent
-            const onlineAgent = nextAgents.find((agent) => isAgentOnline(agent));
-            if (onlineAgent) setSelectedAgentId(onlineAgent.id);
+            // Keep currently selected active agent if still online; otherwise select first online.
+            setSelectedAgentId((prevSelectedId) => {
+                if (prevSelectedId) {
+                    const selected = nextAgents.find((agent) => agent.id === prevSelectedId);
+                    if (selected && isAgentOnline(selected)) return prevSelectedId;
+                }
+                const onlineAgent = nextAgents.find((agent) => isAgentOnline(agent));
+                return onlineAgent ? onlineAgent.id : "";
+            });
         } catch (err) {
             console.error("Failed to fetch agents", err);
-            toast({ title: "Agent Error", description: "Failed to load ETL agents", variant: "destructive" });
+            if (!silent) {
+                toast({ title: "Agent Error", description: "Failed to load ETL agents", variant: "destructive" });
+            }
         } finally {
             setLoadingAgents(false);
         }
@@ -302,11 +311,17 @@ export default function AIComparison() {
         const channel = supabase
             .channel('public:self_hosted_agents')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'self_hosted_agents' }, () => {
-                fetchAgents();
+                fetchAgents({ silent: true });
             })
             .subscribe();
 
+        // Fallback polling keeps heartbeat status fresh even if realtime events are delayed/missed.
+        const intervalId = window.setInterval(() => {
+            fetchAgents({ silent: true });
+        }, 30000);
+
         return () => {
+            window.clearInterval(intervalId);
             supabase.removeChannel(channel);
         };
     }, [fetchAgents]);
@@ -338,6 +353,7 @@ export default function AIComparison() {
 
     // Save Dialog State
     const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
+    const [isHistorySidebarHidden, setIsHistorySidebarHidden] = useState(false);
 
 
 
@@ -373,18 +389,6 @@ export default function AIComparison() {
         // Scroll to top to show the step
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
-
-    // Listen for analyze mapping button click from UploadValidationStep
-    useEffect(() => {
-        const handleAnalyzeClick = () => {
-            if (uploadedFile?.data && !isAnalyzing) {
-                analyzeMapping(uploadedFile.data);
-            }
-        };
-        window.addEventListener('analyzeMapping', handleAnalyzeClick as EventListener);
-        return () => window.removeEventListener('analyzeMapping', handleAnalyzeClick as EventListener);
-    }, [uploadedFile, isAnalyzing]);
-
 
     // Load Connections on mount
     useEffect(() => {
@@ -458,10 +462,14 @@ export default function AIComparison() {
             // Capture all sheets
             const loadedSheets = wb.SheetNames.map(name => ({
                 name,
-                data: XLSX.utils.sheet_to_json(wb.Sheets[name])
+                data: XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false })
             }));
 
             setSheets(loadedSheets);
+            // Reset previous analysis state; user will explicitly click Analyze Selected.
+            setAnalysis(null);
+            setValidationResults(null);
+            setAnalysisError(null);
 
             if (loadedSheets.length > 0) {
                 const firstSheet = loadedSheets[0];
@@ -473,9 +481,6 @@ export default function AIComparison() {
                     title: "File Loaded",
                     description: `Loaded ${loadedSheets.length} sheet${loadedSheets.length > 1 ? 's' : ''}. Select sheets to analyze.`
                 });
-
-                // Auto-analyze first sheet
-                analyzeMapping([firstSheet]);
             } else {
                 toast({ title: "Empty File", description: "No sheets found in file.", variant: "destructive" });
             }
@@ -684,6 +689,13 @@ export default function AIComparison() {
                     }));
                     allTestCases.push(...taggedMappingTests);
                 }
+
+                analyzed.sourceTables?.forEach((t: string) => {
+                    if (t) allSourceTables.add(t);
+                });
+                analyzed.targetTables?.forEach((t: string) => {
+                    if (t) allTargetTables.add(t);
+                });
             }
 
             // Consolidate analysis
@@ -1031,9 +1043,18 @@ export default function AIComparison() {
     };
 
     const handleQueryCreate = (testCase: TestCase) => {
+        const formatForDialog = (sql: string, side: 'source' | 'target') => {
+            const conn = side === 'source' ? sourceConnections[0] : targetConnection;
+            const connLabel = conn?.name || 'Not selected';
+            const connType = (conn?.type || 'unknown').toUpperCase();
+            const trimmed = String(sql || '').trim().replace(/[ \t]+\n/g, '\n');
+            const withSemicolon = /;\s*$/.test(trimmed) ? trimmed : `${trimmed};`;
+            return `-- ${side.toUpperCase()} CONNECTION: ${connLabel} (${connType})\n${withSemicolon}`;
+        };
+
         setSelectedSQL({
-            source: testCase.sourceSQL,
-            target: testCase.targetSQL,
+            source: formatForDialog(testCase.sourceSQL, 'source'),
+            target: formatForDialog(testCase.targetSQL, 'target'),
             name: testCase.name
         });
         setShowSQLDialog(true);
@@ -1550,18 +1571,21 @@ export default function AIComparison() {
     };
 
     return (
-        <ResizablePanelGroup direction="horizontal" className="h-[calc(100vh-100px)] overflow-hidden rounded-xl border bg-background">
-            <ResizablePanel defaultSize={20} minSize={15} maxSize={30}>
-                <TestHistorySidebar
-                    savedRuns={savedRuns}
-                    onLoadRun={handleLoadRun}
-                    onDeleteRun={handleDeleteRun}
-                />
-            </ResizablePanel>
+        <ResizablePanelGroup direction="horizontal" dir="ltr" className="h-[calc(100vh-100px)] overflow-hidden rounded-xl border bg-background">
+            {!isHistorySidebarHidden && (
+                <>
+                    <ResizablePanel defaultSize={20} minSize={15} maxSize={30}>
+                        <TestHistorySidebar
+                            savedRuns={savedRuns}
+                            onLoadRun={handleLoadRun}
+                            onDeleteRun={handleDeleteRun}
+                        />
+                    </ResizablePanel>
+                    <ResizableHandle withHandle />
+                </>
+            )}
 
-            <ResizableHandle withHandle />
-
-            <ResizablePanel defaultSize={80}>
+            <ResizablePanel defaultSize={isHistorySidebarHidden ? 100 : 80}>
                 <div className="h-full space-y-5 overflow-auto bg-muted/20 p-4 sm:p-6">
                     <div className="rounded-xl border bg-card p-4 shadow-sm">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1576,14 +1600,23 @@ export default function AIComparison() {
                                     Upload mapping sheet, validate structure, run ETL comparisons, and save run history.
                                 </p>
                             </div>
-                            <Button
-                                variant="outline"
-                                onClick={handleReset}
-                                className="h-9 gap-2 border-dashed"
-                            >
-                                <RotateCcw className="h-4 w-4" />
-                                Reset Progress
-                            </Button>
+                            <div className="flex items-center gap-2 self-start sm:self-auto">
+                                <Button
+                                    variant={isHistorySidebarHidden ? "default" : "outline"}
+                                    onClick={() => setIsHistorySidebarHidden((prev) => !prev)}
+                                    className="h-9 min-w-[170px] text-sm font-medium"
+                                >
+                                    {isHistorySidebarHidden ? "Show Test Explorer" : "Hide Test Explorer"}
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    onClick={handleReset}
+                                    className="h-9 gap-2 px-3 text-sm text-muted-foreground hover:text-foreground"
+                                >
+                                    <RotateCcw className="h-4 w-4" />
+                                    Reset Progress
+                                </Button>
+                            </div>
                         </div>
                     </div>
 
@@ -1596,38 +1629,45 @@ export default function AIComparison() {
                         {currentStep === 1 && (
                             <div className="space-y-4">
                                 <div className="space-y-1">
-                                    <h2 className="text-xl font-semibold sm:text-2xl">Step 1: Manage Connections</h2>
+                                    <h2 className="text-lg font-semibold sm:text-xl">Step 1: Manage Connections</h2>
                                     <p className="text-sm text-muted-foreground">
                                         Create and manage your database connections. You need at least 2 connections (source and target) to proceed.
                                     </p>
                                 </div>
 
                                 {/* Agent Selection */}
-                                <div className="rounded-xl border bg-card p-4 shadow-sm">
-                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div className="rounded-lg border bg-background p-3">
+                                    <div className="grid gap-3 lg:grid-cols-[1fr_360px] lg:items-start">
                                         <div className="space-y-2">
-                                            <h3 className="text-sm font-semibold">Select Active Agent</h3>
-                                            <p className="text-xs text-muted-foreground">
-                                                Choose an active ETL agent to execute connections and tests.
-                                            </p>
-                                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                                                <Badge variant="outline" className="h-5 px-2">Total: {agents.length}</Badge>
-                                                <Badge variant="outline" className="h-5 border-emerald-200 bg-emerald-50 px-2 text-emerald-700">
-                                                    Active: {selectableAgents.length}
-                                                </Badge>
-                                                <Badge variant="outline" className="h-5 px-2 text-muted-foreground">
-                                                    Offline: {offlineAgents.length}
-                                                </Badge>
+                                            <div>
+                                                <h3 className="text-sm font-semibold">Select Active Agent</h3>
+                                                <p className="text-sm text-muted-foreground">
+                                                    Choose an online ETL agent to execute connection tests and metadata jobs.
+                                                </p>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                <div className="inline-flex items-center gap-2 rounded-md border bg-muted/10 px-2.5 py-1">
+                                                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total</span>
+                                                    <span className="text-sm font-medium">{agents.length}</span>
+                                                </div>
+                                                <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50/70 px-2.5 py-1">
+                                                    <span className="text-xs font-medium uppercase tracking-wide text-emerald-700">Active</span>
+                                                    <span className="text-sm font-medium text-emerald-700">{selectableAgents.length}</span>
+                                                </div>
+                                                <div className="inline-flex items-center gap-2 rounded-md border bg-muted/10 px-2.5 py-1">
+                                                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Offline</span>
+                                                    <span className="text-sm font-medium">{offlineAgents.length}</span>
+                                                </div>
                                             </div>
                                         </div>
-                                        <div className="w-full max-w-sm space-y-2">
+                                        <div className="space-y-2">
                                             <Select
                                                 value={selectedAgentId}
                                                 onValueChange={(value) => setSelectedAgentId(value)}
                                                 disabled={loadingAgents || selectableAgents.length === 0}
                                             >
-                                                <SelectTrigger className="h-9 w-full">
-                                                    <SelectValue placeholder={loadingAgents ? "Loading agents..." : "-- Select Agent --"} />
+                                                <SelectTrigger className="h-10 w-full">
+                                                    <SelectValue placeholder={loadingAgents ? "Loading agents..." : "Select an active agent"} />
                                                 </SelectTrigger>
                                                 <SelectContent>
                                                     {agents.map((agent) => {
@@ -1635,8 +1675,8 @@ export default function AIComparison() {
                                                         const statusLabel = agent.status === "busy" ? "Busy" : isAgentOnline(agent) ? "Online" : "Offline";
                                                         return (
                                                             <SelectItem key={agent.id} value={agent.id} disabled={!isSelectable}>
-                                                                <div className="flex items-center gap-2">
-                                                                    <span>{agent.agent_name}</span>
+                                                                <div className="flex w-full items-center justify-between gap-2">
+                                                                    <span className="truncate">{agent.agent_name}</span>
                                                                     <Badge variant={statusLabel === "Offline" ? "outline" : "default"} className="h-4 text-[10px]">
                                                                         {statusLabel}
                                                                     </Badge>
@@ -1647,13 +1687,13 @@ export default function AIComparison() {
                                                 </SelectContent>
                                             </Select>
                                             {!loadingAgents && agents.length > 0 && selectableAgents.length === 0 && (
-                                                <p className="text-xs text-amber-700">
+                                                <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-sm text-amber-700">
                                                     No active agent available. Start an agent to continue.
                                                 </p>
                                             )}
                                             {selectedAgentId && (
-                                                <p className="text-xs text-muted-foreground">
-                                                    Selected: {agents.find((a) => a.id === selectedAgentId)?.agent_name || "Unknown"}.
+                                                <p className="rounded-md border bg-muted/20 px-2.5 py-1.5 text-sm text-muted-foreground">
+                                                    Selected: <span className="font-medium text-foreground">{agents.find((a) => a.id === selectedAgentId)?.agent_name || "Unknown"}</span>
                                                 </p>
                                             )}
                                         </div>

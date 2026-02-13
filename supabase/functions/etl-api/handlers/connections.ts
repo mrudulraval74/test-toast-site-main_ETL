@@ -105,6 +105,11 @@ function normalizeConnectionPayload(payload: any) {
 
     const normalized = { ...payload };
     const type = String(normalized.type).toLowerCase();
+    // Support DB column naming while keeping runtime shape expected by handlers/UI.
+    if (!normalized.schema && normalized.schema_name) normalized.schema = normalized.schema_name;
+    if (!normalized.serviceName && normalized.service_name) normalized.serviceName = normalized.service_name;
+    if (!normalized.httpPath && normalized.http_path) normalized.httpPath = normalized.http_path;
+    if (!normalized.filePath && normalized.file_path) normalized.filePath = normalized.file_path;
     const connectionString = normalized.connectionString || normalized.connection_string;
 
     if (connectionString && typeof connectionString === 'string') {
@@ -152,6 +157,49 @@ function normalizeSqlServerConnectionPayload(payload: any) {
     }
 
     return normalized;
+}
+
+function toConnectionStoragePayload(payload: any) {
+    if (!payload || typeof payload !== 'object') return payload;
+
+    // Keep only columns that exist in public.connections and map UI keys to DB columns.
+    const keyMap: Record<string, string> = {
+        name: 'name',
+        type: 'type',
+        host: 'host',
+        port: 'port',
+        instance: 'instance',
+        database: 'database',
+        username: 'username',
+        password: 'password',
+        trusted: 'trusted',
+        ssl: 'ssl',
+        charset: 'charset',
+        save_credentials: 'save_credentials',
+        schema: 'schema_name',
+        schema_name: 'schema_name',
+        serviceName: 'service_name',
+        service_name: 'service_name',
+        httpPath: 'http_path',
+        http_path: 'http_path',
+        token: 'token',
+        catalog: 'catalog',
+        account: 'account',
+        warehouse: 'warehouse',
+        role: 'role',
+        filePath: 'file_path',
+        file_path: 'file_path',
+        readonly: 'readonly',
+    };
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(payload)) {
+        const mappedKey = keyMap[key];
+        if (mappedKey && value !== undefined) {
+            sanitized[mappedKey] = value;
+        }
+    }
+    return sanitized;
 }
 
 export async function handleGetMetadata(req: Request, connectionId: string): Promise<Response> {
@@ -399,12 +447,11 @@ export async function handleConnectionsList(req: Request): Promise<Response> {
 export async function handleConnectionSave(req: Request): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
-    const body = normalizeConnectionPayload(rawBody);
+    const body = toConnectionStoragePayload(normalizeConnectionPayload(rawBody));
     if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
         // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
         body.port = 1433;
     }
-    delete body.encrypt;
     const { data, error } = await supabase.from('connections').insert(body).select().single();
     if (error) throw error;
     return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -413,12 +460,11 @@ export async function handleConnectionSave(req: Request): Promise<Response> {
 export async function handleConnectionUpdate(req: Request, connectionId: string): Promise<Response> {
     const supabase = getSupabaseAdmin();
     const rawBody = await req.json();
-    const body = normalizeConnectionPayload(rawBody);
+    const body = toConnectionStoragePayload(normalizeConnectionPayload(rawBody));
     if ((body.type === 'mssql' || body.type === 'azuresql') && !body.port) {
         // DB schema requires port; keep default for storage even if runtime may prefer instance resolution.
         body.port = 1433;
     }
-    delete body.encrypt;
     // Preserve existing stored password when UI submits an edit without changing password.
     if (!body.password || String(body.password).trim() === '') {
         delete body.password;

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, Database, Table, Columns3, Loader2, Key, Circle, Search, LayoutGrid, ListTree, Info } from 'lucide-react';
+import { ChevronRight, ChevronDown, Database, Table, Columns3, Loader2, Key, Circle, Search, LayoutGrid, ListTree, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
@@ -49,6 +49,7 @@ interface DatabaseTreeProps {
 
 export function DatabaseTree({ data, loading, error }: DatabaseTreeProps) {
   const [viewMode, setViewMode] = useState<'tree' | 'grid'>('tree');
+  const [showExplorer, setShowExplorer] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set());
@@ -161,7 +162,10 @@ export function DatabaseTree({ data, loading, error }: DatabaseTreeProps) {
           <Button
             variant={viewMode === 'tree' ? 'secondary' : 'ghost'}
             size="sm"
-            onClick={() => setViewMode('tree')}
+            onClick={() => {
+              setViewMode('tree');
+              setShowExplorer(true);
+            }}
             className="h-7 px-2"
             title="Tree View"
           >
@@ -176,11 +180,24 @@ export function DatabaseTree({ data, loading, error }: DatabaseTreeProps) {
           >
             <LayoutGrid className="h-4 w-4" />
           </Button>
+          {viewMode === 'grid' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowExplorer((prev) => !prev)}
+              className="h-7 gap-1 px-2"
+              title={showExplorer ? "Hide Explorer" : "Show Explorer"}
+            >
+              {showExplorer ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+              <span className="hidden sm:inline text-xs">{showExplorer ? 'Hide Explorer' : 'Show Explorer'}</span>
+            </Button>
+          )}
         </div>
       </div>
 
-      <div className={cn("grid gap-4", viewMode === 'grid' ? "grid-cols-1 md:grid-cols-3" : "grid-cols-1")}>
+      <div className={cn("grid gap-4", viewMode === 'grid' ? (showExplorer ? "grid-cols-1 md:grid-cols-3" : "grid-cols-1") : "grid-cols-1")}>
         {/* Tree Section */}
+        {(viewMode === 'tree' || showExplorer) && (
         <ScrollArea className={cn("border rounded-md p-2", viewMode === 'grid' ? "h-[500px] md:col-span-1" : "h-[500px]")}>
           <div className="space-y-1">
             {filteredData.map((db) => (
@@ -275,10 +292,11 @@ export function DatabaseTree({ data, loading, error }: DatabaseTreeProps) {
             ))}
           </div>
         </ScrollArea>
+        )}
 
         {/* Grid View Details Section */}
         {viewMode === 'grid' && (
-          <div className="md:col-span-2 h-[500px] border rounded-md flex flex-col">
+          <div className={cn("h-[500px] border rounded-md flex flex-col", showExplorer ? "md:col-span-2" : "md:col-span-1")}>
             {selectedTable ? (
               <>
                 <div className="p-3 border-b bg-muted/20 flex items-center gap-2">

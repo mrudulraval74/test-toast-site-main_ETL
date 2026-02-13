@@ -2,7 +2,6 @@ import React from 'react';
 import { Save, Download, FileSpreadsheet, CheckCircle, XCircle, Clock, TrendingUp } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -78,45 +77,45 @@ export function SaveResultsStep({
     }
 
     return (
-        <div className="space-y-5">
+        <div className="space-y-4">
             <div className="space-y-1">
-                <h2 className="text-xl font-semibold sm:text-2xl">Save Results</h2>
+                <h2 className="text-lg font-semibold sm:text-xl">Save Results</h2>
                 <p className="text-sm text-muted-foreground">
                     Review your test results and save to history
                 </p>
             </div>
 
             {/* Summary Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card className="border-primary/20 bg-primary/5">
-                    <CardContent className="p-5">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <Card className="border-border/80 bg-card shadow-sm">
+                    <CardContent className="p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-muted-foreground">Test Suite</span>
-                            <FileSpreadsheet className="h-5 w-5 text-primary" />
+                            <span className="text-xs font-semibold uppercase text-muted-foreground">Test Suite</span>
+                            <FileSpreadsheet className="h-4 w-4 text-primary" />
                         </div>
-                        <div className="truncate text-2xl font-bold" title={uploadedFile.name}>{uploadedFile.name}</div>
+                        <div className="truncate text-lg font-semibold" title={uploadedFile.name}>{uploadedFile.name}</div>
                         <p className="text-xs text-muted-foreground mt-1">{testCases.length} test cases</p>
                     </CardContent>
                 </Card>
 
-                <Card className="border-emerald-200 bg-emerald-50/70">
-                    <CardContent className="p-5">
+                <Card className="border-emerald-200 bg-emerald-50/60 shadow-sm">
+                    <CardContent className="p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-green-700">Success Rate</span>
-                            <TrendingUp className="h-5 w-5 text-green-600" />
+                            <span className="text-xs font-semibold uppercase text-green-700">Success Rate</span>
+                            <TrendingUp className="h-4 w-4 text-green-600" />
                         </div>
-                        <div className="text-2xl font-bold text-green-700">{stats.passRate}%</div>
-                        <Progress value={stats.passRate} className="h-2 mt-2" />
+                        <div className="text-xl font-semibold text-green-700">{stats.passRate}%</div>
+                        <Progress value={stats.passRate} className="mt-2 h-1.5" />
                     </CardContent>
                 </Card>
 
-                <Card className="border-blue-200 bg-blue-50/70">
-                    <CardContent className="p-5">
+                <Card className="border-blue-200 bg-blue-50/60 shadow-sm">
+                    <CardContent className="p-4">
                         <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-blue-700">Execution Status</span>
-                            <Clock className="h-5 w-5 text-blue-600" />
+                            <span className="text-xs font-semibold uppercase text-blue-700">Execution Status</span>
+                            <Clock className="h-4 w-4 text-blue-600" />
                         </div>
-                        <div className="text-2xl font-bold text-blue-700">
+                        <div className="text-xl font-semibold text-blue-700">
                             {stats.executed} / {stats.total}
                         </div>
                         <p className="text-xs text-blue-600 mt-1">
@@ -128,38 +127,38 @@ export function SaveResultsStep({
 
             {/* Results Breakdown */}
             <Card className="border-border/80 shadow-sm">
-                <CardHeader>
-                    <CardTitle>Results Breakdown</CardTitle>
+                <CardHeader className="pb-3">
+                    <CardTitle className="text-base font-semibold">Results Breakdown</CardTitle>
                     <CardDescription>
                         Detailed overview of test execution results
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                        <div className="rounded-lg bg-muted/30 p-4 text-center">
-                            <div className="text-3xl font-bold">{stats.total}</div>
-                            <div className="text-xs text-muted-foreground mt-1 uppercase">Total Tests</div>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                        <div className="rounded-md bg-muted/30 p-3 text-center">
+                            <div className="text-2xl font-semibold">{stats.total}</div>
+                            <div className="mt-1 text-[11px] font-medium uppercase text-muted-foreground">Total Tests</div>
                         </div>
-                        <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center">
-                            <div className="flex items-center justify-center gap-1 mb-1">
+                        <div className="rounded-md border border-green-200 bg-green-50 p-3 text-center">
+                            <div className="mb-1 flex items-center justify-center gap-1">
                                 <CheckCircle className="h-4 w-4 text-green-600" />
-                                <div className="text-3xl font-bold text-green-700">{stats.passed}</div>
+                                <div className="text-2xl font-semibold text-green-700">{stats.passed}</div>
                             </div>
-                            <div className="text-xs text-green-700 uppercase font-medium">Passed</div>
+                            <div className="text-[11px] font-semibold uppercase text-green-700">Passed</div>
                         </div>
-                        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-center">
-                            <div className="flex items-center justify-center gap-1 mb-1">
+                        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-center">
+                            <div className="mb-1 flex items-center justify-center gap-1">
                                 <XCircle className="h-4 w-4 text-red-600" />
-                                <div className="text-3xl font-bold text-red-700">{stats.failed}</div>
+                                <div className="text-2xl font-semibold text-red-700">{stats.failed}</div>
                             </div>
-                            <div className="text-xs text-red-700 uppercase font-medium">Failed</div>
+                            <div className="text-[11px] font-semibold uppercase text-red-700">Failed</div>
                         </div>
-                        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-center">
-                            <div className="flex items-center justify-center gap-1 mb-1">
+                        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-center">
+                            <div className="mb-1 flex items-center justify-center gap-1">
                                 <Clock className="h-4 w-4 text-blue-600" />
-                                <div className="text-3xl font-bold text-blue-700">{stats.pending}</div>
+                                <div className="text-2xl font-semibold text-blue-700">{stats.pending}</div>
                             </div>
-                            <div className="text-xs text-blue-700 uppercase font-medium">Pending</div>
+                            <div className="text-[11px] font-semibold uppercase text-blue-700">Pending</div>
                         </div>
                     </div>
                 </CardContent>
@@ -192,10 +191,10 @@ export function SaveResultsStep({
             )}
 
             {/* Action Buttons */}
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <Card className="border-primary/20 bg-primary/5">
-                    <CardHeader>
-                        <CardTitle className="text-lg flex items-center gap-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <Card className="border-primary/20 bg-primary/5 shadow-sm">
+                    <CardHeader className="pb-3">
+                        <CardTitle className="flex items-center gap-2 text-base font-semibold">
                             <Save className="h-5 w-5 text-primary" />
                             Save to History
                         </CardTitle>
@@ -204,7 +203,7 @@ export function SaveResultsStep({
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <Button onClick={onSaveResults} className="h-10 w-full gap-2 shadow-sm">
+                        <Button onClick={onSaveResults} className="h-9 w-full gap-2 shadow-sm">
                             <Save className="h-4 w-4" />
                             Save Test Run
                         </Button>
@@ -214,9 +213,9 @@ export function SaveResultsStep({
                     </CardContent>
                 </Card>
 
-                <Card className="border-border bg-muted/10">
-                    <CardHeader>
-                        <CardTitle className="text-lg flex items-center gap-2">
+                <Card className="border-border bg-muted/10 shadow-sm">
+                    <CardHeader className="pb-3">
+                        <CardTitle className="flex items-center gap-2 text-base font-semibold">
                             <Download className="h-5 w-5" />
                             Export Results
                         </CardTitle>
@@ -227,7 +226,7 @@ export function SaveResultsStep({
                     <CardContent className="space-y-2">
                         {onExportResults && (
                             <>
-                                <Button variant="outline" className="h-9 w-full gap-2" onClick={() => onExportResults('sql')}>
+                                <Button variant="outline" className="h-9 w-full justify-start gap-2" onClick={() => onExportResults('sql')}>
                                     <FileSpreadsheet className="h-4 w-4" />
                                     Export as SQL Script
                                 </Button>
@@ -255,9 +254,9 @@ export function SaveResultsStep({
 
             {/* Test Categories Breakdown */}
             {hasExecutedTests && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle className="text-base">Test Categories</CardTitle>
+                <Card className="shadow-sm">
+                    <CardHeader className="pb-3">
+                        <CardTitle className="text-base font-semibold">Test Categories</CardTitle>
                         <CardDescription>Results organized by category</CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -281,13 +280,18 @@ export function SaveResultsStep({
                                 const passRate = categoryExecuted > 0 ? Math.round((categoryPassed / categoryExecuted) * 100) : 0;
 
                                 return (
-                                    <div key={category} className="flex items-center justify-between p-3 rounded-lg border bg-card">
-                                        <div className="flex items-center gap-3 flex-1">
-                                            <Badge variant="outline" className="min-w-[120px]">
-                                                {categoryNames[category]}
-                                            </Badge>
+                                    <div key={category} className="rounded-md border bg-card p-3">
+                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                            <div className="text-sm font-medium text-foreground">{categoryNames[category]}</div>
+                                            <div className="flex items-center gap-3 text-xs">
+                                                <span className="text-green-600">{categoryPassed} passed</span>
+                                                <span className="text-red-600">{categoryFailed} failed</span>
+                                                <span className="text-muted-foreground">{categoryTests.length} total</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3">
                                             <div className="flex-1">
-                                                <div className="h-2 w-full bg-secondary/30 rounded-full overflow-hidden flex">
+                                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary/30 flex">
                                                     {categoryPassed > 0 && (
                                                         <div
                                                             className="h-full bg-green-500"
@@ -302,11 +306,7 @@ export function SaveResultsStep({
                                                     )}
                                                 </div>
                                             </div>
-                                        </div>
-                                        <div className="flex items-center gap-4 text-sm">
-                                            <span className="text-green-600 font-medium">{categoryPassed} passed</span>
-                                            <span className="text-red-600 font-medium">{categoryFailed} failed</span>
-                                            <span className="text-muted-foreground">{categoryTests.length} total</span>
+                                            <div className="w-10 text-right text-xs text-muted-foreground">{passRate}%</div>
                                         </div>
                                     </div>
                                 );

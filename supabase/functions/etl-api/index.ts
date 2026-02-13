@@ -301,6 +301,12 @@ Deno.serve(async (req) => {
         // AI Chat (dummy endpoint)
         if (path === '/ai/chat' && req.method === 'POST') {
             const body = await req.json();
+            if (body?.context === 'connections') {
+                return new Response(JSON.stringify({
+                    success: false,
+                    error: 'AI-based connection creation is temporarily disabled.'
+                }), { status: 410, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }
             return new Response(JSON.stringify({
                 success: true,
                 response: `Analysis for ${body.context}: Initializing deeper inspection of your data structure.`,
@@ -311,9 +317,6 @@ Deno.serve(async (req) => {
         // AI Suggestions
         if (path === '/ai/suggestions' && (req.method === 'POST' || req.method === 'GET')) {
             const suggestions = ["Compare schema structures", "Analyze data quality", "Generate sample queries"];
-            if (path.includes('context=connections')) {
-                suggestions.push("Check source reachability", "Verify credential permissions");
-            }
             return new Response(JSON.stringify({
                 success: true,
                 suggestions

@@ -97,18 +97,31 @@ export function UploadValidationStep({
         onSourceConnectionsChange(newConns);
     };
 
+    const showSheetSelector = sheets.length > 1 && !!onSheetsSelectionChange;
+    const showAnalyzeButton = !!uploadedFile && !!onAnalyzeSelected;
+
     return (
-        <div className="space-y-5">
+        <div className="space-y-4">
             <div className="space-y-1">
-                <h2 className="text-xl font-semibold sm:text-2xl">Upload & Validate Structure</h2>
+                <h2 className="text-lg font-semibold sm:text-xl">Upload & Validate Structure</h2>
                 <p className="text-sm text-muted-foreground">
                     Select connections, upload your mapping file, and validate against database structures
                 </p>
             </div>
 
+            <div className="rounded-lg border bg-muted/10 px-3 py-2.5">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase text-primary">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Deployment Guide
+                </div>
+                <p className="mt-1 text-sm text-muted-foreground">
+                    Changes are validated against the selected target schema to protect data integrity during ETL execution.
+                </p>
+            </div>
+
             {/* Connection Selection */}
-            <Card className="border-border/80 shadow-sm">
-                <CardHeader className="border-b bg-muted/20 px-5 py-4">
+            <Card className="border-border shadow-sm">
+                <CardHeader className="border-b bg-muted/10 px-4 py-3">
                     <div className="flex items-center justify-between">
                         <div className="space-y-1">
                             <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -119,8 +132,8 @@ export function UploadValidationStep({
                                 Configure source and target database instances for validation
                             </CardDescription>
                         </div>
-                        <div className="flex items-center gap-2 rounded-md border bg-background px-2 py-1.5">
-                            <Label htmlFor="multi-source-toggle" className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Multi-Source Mode</Label>
+                        <div className="flex items-center gap-2 rounded-md border bg-background px-2 py-1">
+                            <Label htmlFor="multi-source-toggle" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Multi-Source Mode</Label>
                             <Checkbox
                                 id="multi-source-toggle"
                                 checked={multiSourceMode}
@@ -130,15 +143,15 @@ export function UploadValidationStep({
                         </div>
                     </div>
                 </CardHeader>
-                <CardContent className="p-5">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <CardContent className="p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {/* Source Side */}
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                             <div className="flex items-center justify-between mb-2">
-                                <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground flex items-center gap-2">
+                                <Label className="text-xs font-semibold uppercase tracking-wide text-foreground flex items-center gap-2">
                                     Source {multiSourceMode ? 'Connections' : 'Connection'}
                                     {multiSourceMode && (
-                                        <Badge variant="secondary" className="h-4 text-[9px] px-1.5 bg-primary/10 text-primary border-none font-bold">
+                                        <Badge variant="secondary" className="h-4 px-1.5 text-[10px] bg-primary/10 text-primary border-none">
                                             {sourceConnections.filter(c => c.id).length} Active
                                         </Badge>
                                     )}
@@ -147,10 +160,10 @@ export function UploadValidationStep({
 
                             <div className="space-y-3">
                                 {(multiSourceMode ? sourceConnections : [sourceConnections[0]]).map((conn, idx) => (
-                                    <div key={idx} className="group relative flex gap-3 rounded-lg border bg-background p-3 shadow-sm transition-colors hover:border-primary/30">
+                                    <div key={idx} className="group relative flex gap-3 rounded-lg border bg-background p-3 transition-colors hover:border-primary/30">
                                         <div className="flex-1 space-y-2">
                                             <div className="flex items-center justify-between">
-                                                <span className="text-[10px] font-semibold text-muted-foreground">Source #{idx + 1}</span>
+                                                <span className="text-xs font-medium text-muted-foreground">Source #{idx + 1}</span>
                                                 {multiSourceMode && sourceConnections.length > 1 && (
                                                     <Button
                                                         variant="ghost"
@@ -166,21 +179,23 @@ export function UploadValidationStep({
                                                 value={conn?.id || "none"}
                                                 onValueChange={(val) => handleSourceChange(idx, val)}
                                             >
-                                                <SelectTrigger className="h-9 bg-background text-sm">
+                                                <SelectTrigger className="h-10 bg-background text-sm">
                                                     <SelectValue placeholder="Select Source Connection..." />
                                                 </SelectTrigger>
                                                 <SelectContent className="border-primary/10 shadow-xl">
-                                                    <SelectItem value="none">None selected</SelectItem>
+                                                    <SelectItem value="none" className="text-sm font-normal">None selected</SelectItem>
                                                     {savedConnections.map((c: any) => (
-                                                        <SelectItem key={c.id} value={c.id} className="text-sm">
-                                                            <div className="flex flex-col">
-                                                                <span className="font-semibold">{c.name}</span>
-                                                                <span className="text-[10px] opacity-60 uppercase">{c.type} • {c.database || 'Default'}</span>
-                                                            </div>
+                                                        <SelectItem key={c.id} value={c.id} className="text-sm font-normal">
+                                                            {c.name}
                                                         </SelectItem>
                                                     ))}
                                                 </SelectContent>
                                             </Select>
+                                            {conn?.id && (
+                                                <div className="px-1 text-xs uppercase tracking-wide text-muted-foreground">
+                                                    {conn.type || 'unknown'} | {conn.database || 'Default'}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 ))}
@@ -200,53 +215,46 @@ export function UploadValidationStep({
 
                         {/* Target Side */}
                         <div className="space-y-4">
-                            <Label className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2 block">
+                            <Label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-foreground">
                                 Target Environment
                             </Label>
-                            <div className="h-fit rounded-lg border bg-background p-3 shadow-sm">
+                            <div className="h-fit rounded-lg border bg-background p-3">
                                 <div className="space-y-2">
-                                    <span className="text-[10px] font-bold text-muted-foreground">Primary Sink</span>
+                                    <span className="text-xs font-medium text-muted-foreground">Primary Sink</span>
                                     <Select
                                         value={targetConnection?.id || "none"}
                                         onValueChange={onTargetConnectionChange}
                                     >
-                                    <SelectTrigger className="h-9 bg-background text-sm">
+                                    <SelectTrigger className="h-10 bg-background text-sm">
                                             <SelectValue placeholder="Select Target System..." />
                                         </SelectTrigger>
                                         <SelectContent className="border-primary/10 shadow-xl">
-                                            <SelectItem value="none">None selected</SelectItem>
+                                            <SelectItem value="none" className="text-sm font-normal">None selected</SelectItem>
                                             {savedConnections.map((conn: any) => (
-                                                <SelectItem key={conn.id} value={conn.id} className="text-sm">
-                                                    <div className="flex flex-col">
-                                                        <span className="font-semibold">{conn.name}</span>
-                                                        <span className="text-[10px] opacity-60 uppercase">{conn.type} • {conn.database || 'Default'}</span>
-                                                    </div>
+                                                <SelectItem key={conn.id} value={conn.id} className="text-sm font-normal">
+                                                    {conn.name}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
+                                    {targetConnection?.id && (
+                                        <div className="px-1 text-xs uppercase tracking-wide text-muted-foreground">
+                                            {targetConnection.type || 'unknown'} | {targetConnection.database || 'Default'}
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
-                            <div className="space-y-2 rounded-lg border bg-muted/20 p-4">
-                                <div className="flex items-center gap-2 text-[10px] font-semibold uppercase text-primary">
-                                    <AlertCircle className="h-3 w-3" />
-                                    Deployment Guide
-                                </div>
-                                <p className="text-[11px] leading-relaxed text-muted-foreground/80">
-                                    Changes will be validated against the target schema to ensure data integrity during ETL execution.
-                                </p>
                             </div>
                         </div>
                     </div>
                 </CardContent>
             </Card>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
                 {/* Left Column: Upload */}
-                <div className="space-y-6">
+                <div className="space-y-4">
                     {/* Upload Zone */}
-                    <Card className="shadow-sm border-border/50">
-                        <CardHeader className="pb-3 border-b bg-muted/5">
+                    <Card className="shadow-sm border-border">
+                        <CardHeader className="pb-3 border-b bg-muted/10">
                             <CardTitle className="text-base font-medium flex items-center gap-2">
                                 <FileSpreadsheet className="h-4 w-4 text-primary" />
                                 Upload Mapping File
@@ -261,7 +269,7 @@ export function UploadValidationStep({
                             {!uploadedFile ? (
                                 <div
                                     className={`
-                                        border-2 border-dashed rounded-lg p-8 transition-all duration-300 cursor-pointer flex flex-col items-center justify-center text-center
+                                        border-2 border-dashed rounded-lg p-6 transition-all duration-300 cursor-pointer flex flex-col items-center justify-center text-center
                                         ${isDragging ? 'border-primary bg-primary/5 scale-[1.02]' : 'border-border/50 hover:border-primary/50 hover:bg-primary/5'}
                                     `}
                                     onDragOver={onDragOver}
@@ -272,7 +280,7 @@ export function UploadValidationStep({
                                         if (el) { el.value = ''; el.click(); }
                                     }}
                                 >
-                                    <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-3">
+                                    <div className="mb-2 h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
                                         <Upload className="h-6 w-6 text-primary" />
                                     </div>
                                     <p className="text-sm font-medium">Drop mapping sheet here</p>
@@ -287,16 +295,16 @@ export function UploadValidationStep({
                                 </div>
                             ) : (
                                 <div className="space-y-4">
-                                    <div className="border border-primary/10 rounded-xl p-3 bg-primary/5 flex items-center gap-4 shadow-sm overflow-hidden">
+                                    <div className="overflow-hidden rounded-xl border border-primary/10 bg-primary/5 p-3 flex items-center gap-4">
                                         <div className="flex-1 flex items-center gap-3 min-w-0">
                                             <div className="shrink-0 p-2.5 bg-background rounded-lg shadow-inner">
                                                 <FileSpreadsheet className="h-5 w-5 text-primary" />
                                             </div>
                                             <div className="space-y-0.5 min-w-0">
-                                                <p className="text-sm font-bold truncate text-foreground">{uploadedFile.name}</p>
+                                                <p className="truncate text-sm font-medium text-foreground">{uploadedFile.name}</p>
                                                 <div className="flex items-center gap-2">
-                                                    <Badge variant="secondary" className="h-4 text-[9px] px-1 font-bold bg-primary/10 text-primary border-none">{uploadedFile.data.length} ROWS</Badge>
-                                                    <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-tight">Excel Document</span>
+                                                    <Badge variant="secondary" className="h-4 px-1 text-[10px] bg-primary/10 text-primary border-none">{uploadedFile.data.length} ROWS</Badge>
+                                                    <span className="text-xs text-muted-foreground uppercase tracking-wide">Excel Document</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -304,7 +312,7 @@ export function UploadValidationStep({
                                         <Button
                                             variant="ghost"
                                             size="sm"
-                                            className="shrink-0 h-8 text-[11px] font-bold gap-1.5 px-3 rounded-lg border border-primary/20 bg-background/80 hover:bg-primary/10 hover:text-primary transition-all shadow-sm"
+                                            className="h-8 shrink-0 gap-1.5 rounded-lg border border-primary/20 bg-background/80 px-3 text-xs font-medium hover:bg-primary/10 hover:text-primary transition-all"
                                             onClick={() => {
                                                 if (onChangeFile) onChangeFile(); // Clear current file
                                                 const el = document.getElementById('file-input') as HTMLInputElement;
@@ -316,7 +324,7 @@ export function UploadValidationStep({
                                         </Button>
                                     </div>
 
-                                    {sheets.length > 1 && onSheetsSelectionChange && (
+                                    {showSheetSelector && (
                                         <div className="mt-4 space-y-3 animate-in fade-in slide-in-from-top-2">
                                             <div className="flex items-center justify-between">
                                                 <Label className="flex items-center gap-2">
@@ -357,19 +365,22 @@ export function UploadValidationStep({
                                                 ))}
                                             </div>
 
-                                            <Button
-                                                className="w-full"
-                                                size="sm"
-                                                onClick={onAnalyzeSelected}
-                                                disabled={selectedSheetNames.length === 0 || isAnalyzing}
-                                            >
-                                                {isAnalyzing ? (
-                                                    <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Processing...</>
-                                                ) : (
-                                                    `Analyze ${selectedSheetNames.length} Selected Sheet${selectedSheetNames.length !== 1 ? 's' : ''}`
-                                                )}
-                                            </Button>
                                         </div>
+                                    )}
+
+                                    {showAnalyzeButton && (
+                                        <Button
+                                            className="w-full"
+                                            size="sm"
+                                            onClick={onAnalyzeSelected}
+                                            disabled={selectedSheetNames.length === 0 || isAnalyzing}
+                                        >
+                                            {isAnalyzing ? (
+                                                <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Processing...</>
+                                            ) : (
+                                                `Analyze ${selectedSheetNames.length} Selected Sheet${selectedSheetNames.length !== 1 ? 's' : ''}`
+                                            )}
+                                        </Button>
                                     )}
 
                                     {analysisError && (
@@ -396,12 +407,12 @@ export function UploadValidationStep({
                 </div>
 
                 {/* Right Column: Validation Results */}
-                <div className="space-y-6 h-full">
+                <div className="h-full space-y-4">
                     {!validationResults ? (
-                        <div className="h-full min-h-[400px] border-2 border-dashed rounded-xl flex flex-col items-center justify-center text-muted-foreground p-8 bg-muted/5">
-                            <ShieldCheck className="h-16 w-16 mb-4 opacity-10" />
-                            <h3 className="text-lg font-medium opacity-50">Validation Results</h3>
-                            <p className="text-sm opacity-50 text-center max-w-xs mt-2">
+                        <div className="h-full min-h-[340px] border-2 border-dashed border-border rounded-xl flex flex-col items-center justify-center text-muted-foreground p-6 bg-background">
+                            <ShieldCheck className="mb-3 h-12 w-12 opacity-30" />
+                            <h3 className="text-base font-semibold text-foreground">Validation Results</h3>
+                            <p className="text-sm text-muted-foreground text-center max-w-xs mt-2">
                                 Upload a file and analyze to see validation insights here.
                             </p>
                         </div>
@@ -528,7 +539,7 @@ export function UploadValidationStep({
                                                             <ul className="space-y-1">
                                                                 {validationResults.sourceErrors.map((err: string, i: number) => (
                                                                     <li key={i} className="text-sm text-red-600 flex items-start gap-2 pl-2">
-                                                                        <span className="text-red-400 mt-1.5 text-[10px]">●</span> {err}
+                                                                        <span className="text-red-400 mt-1.5 text-[10px]">*</span> {err}
                                                                     </li>
                                                                 ))}
                                                             </ul>
@@ -542,7 +553,7 @@ export function UploadValidationStep({
                                                             <ul className="space-y-1">
                                                                 {validationResults.targetErrors.map((err: string, i: number) => (
                                                                     <li key={i} className="text-sm text-red-600 flex items-start gap-2 pl-2">
-                                                                        <span className="text-red-400 mt-1.5 text-[10px]">●</span> {err}
+                                                                        <span className="text-red-400 mt-1.5 text-[10px]">*</span> {err}
                                                                     </li>
                                                                 ))}
                                                             </ul>
@@ -594,3 +605,4 @@ export function UploadValidationStep({
         </div >
     );
 }
+
