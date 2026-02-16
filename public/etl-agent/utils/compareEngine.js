@@ -13,6 +13,7 @@ function hashRow(row, columns) {
 // Execute comparison
 async function executeComparison(config) {
     const startTime = Date.now();
+    const maxDetailedMismatches = Number(process.env.MAX_MISMATCH_ROWS || '50000');
 
     try {
         // Execute both queries
@@ -40,54 +41,92 @@ async function executeComparison(config) {
 
         console.log(`[Comparison] Comparing using columns: ${compareColumns.join(', ')}`);
 
-        // Create hash maps for comparison
-        const sourceMap = new Map();
-        const targetMap = new Map();
+        // Create hash buckets for comparison. Buckets preserve duplicates.
+        const sourceBuckets = new Map();
+        const targetBuckets = new Map();
 
         sourceResult.rows.forEach(row => {
             const hash = hashRow(row, compareColumns);
-            sourceMap.set(hash, row);
+            if (!sourceBuckets.has(hash)) sourceBuckets.set(hash, []);
+            sourceBuckets.get(hash).push(row);
         });
 
         targetResult.rows.forEach(row => {
             const hash = hashRow(row, compareColumns);
-            targetMap.set(hash, row);
+            if (!targetBuckets.has(hash)) targetBuckets.set(hash, []);
+            targetBuckets.get(hash).push(row);
         });
 
         // Calculate differences
         let matchedRows = 0;
-        let mismatchedRows = 0;
+        let sourceOnlyRows = 0;
+        let targetOnlyRows = 0;
+        const mismatches = [];
+        const comparisonRows = [];
         const sampleMismatches = [];
         const maxSamples = 10;
+        const addMismatch = (entry) => {
+            if (mismatches.length < maxDetailedMismatches) {
+                mismatches.push(entry);
+            }
+            if (sampleMismatches.length < maxSamples) {
+                sampleMismatches.push(entry);
+            }
+        };
 
-        // Check source rows
-        for (const [hash, sourceRow] of sourceMap.entries()) {
-            if (targetMap.has(hash)) {
-                matchedRows++;
-            } else {
-                mismatchedRows++;
-                if (sampleMismatches.length < maxSamples) {
-                    sampleMismatches.push({
-                        type: 'source_only',
-                        row: sourceRow,
+        const allHashes = new Set([...sourceBuckets.keys(), ...targetBuckets.keys()]);
+        const addComparisonRow = (entry) => {
+            comparisonRows.push(entry);
+        };
+
+        for (const hash of allHashes) {
+            const srcRows = sourceBuckets.get(hash) || [];
+            const tgtRows = targetBuckets.get(hash) || [];
+            const pairCount = Math.max(srcRows.length, tgtRows.length);
+
+            for (let i = 0; i < pairCount; i++) {
+                const sourceRow = srcRows[i];
+                const targetRow = tgtRows[i];
+
+                if (sourceRow && targetRow) {
+                    matchedRows++;
+                    addComparisonRow({
+                        compareKeyHash: hash,
+                        status: 'matched',
+                        sourceRow,
+                        targetRow,
+                    });
+                } else if (sourceRow) {
+                    sourceOnlyRows++;
+                    const mismatch = {
+                        mismatchType: 'sourceOnly',
+                        compareKeyHash: hash,
+                        sourceRow,
+                    };
+                    addMismatch(mismatch);
+                    addComparisonRow({
+                        compareKeyHash: hash,
+                        status: 'sourceOnly',
+                        sourceRow,
+                    });
+                } else if (targetRow) {
+                    targetOnlyRows++;
+                    const mismatch = {
+                        mismatchType: 'targetOnly',
+                        compareKeyHash: hash,
+                        targetRow,
+                    };
+                    addMismatch(mismatch);
+                    addComparisonRow({
+                        compareKeyHash: hash,
+                        status: 'targetOnly',
+                        targetRow,
                     });
                 }
             }
         }
 
-        // Check target-only rows
-        let targetOnlyCount = 0;
-        for (const [hash, targetRow] of targetMap.entries()) {
-            if (!sourceMap.has(hash)) {
-                targetOnlyCount++;
-                if (sampleMismatches.length < maxSamples) {
-                    sampleMismatches.push({
-                        type: 'target_only',
-                        row: targetRow,
-                    });
-                }
-            }
-        }
+        const mismatchedRows = sourceOnlyRows + targetOnlyRows;
 
         const executionTime = Date.now() - startTime;
 
@@ -97,11 +136,18 @@ async function executeComparison(config) {
                 targetRowCount: targetResult.rowCount,
                 matchedRows,
                 mismatchedRows,
-                sourceOnlyRows: mismatchedRows,
-                targetOnlyRows: targetOnlyCount,
-                comparisonStatus: (mismatchedRows === 0 && targetOnlyCount === 0) ? 'passed' : 'failed',
+                sourceOnlyRows,
+                targetOnlyRows,
+                comparisonStatus: mismatchedRows === 0 ? 'passed' : 'failed',
             },
+            compareColumns,
+            source_data: sourceResult.rows,
+            target_data: targetResult.rows,
+            comparison_rows: comparisonRows,
+            mismatches,
             sampleMismatches,
+            mismatchTruncated: mismatches.length >= maxDetailedMismatches && mismatchedRows > maxDetailedMismatches,
+            mismatchLimit: maxDetailedMismatches,
             executionTime,
         };
 

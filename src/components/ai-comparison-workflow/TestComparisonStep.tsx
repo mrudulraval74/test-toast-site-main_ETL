@@ -52,6 +52,8 @@ interface TestCase {
             targetCount: number;
             sourceData?: any[];
             targetData?: any[];
+            comparisonData?: any[];
+            compareColumns?: string[];
             comparisonType: string;
             executionTime?: number;
             mismatchData?: any[];
@@ -245,6 +247,117 @@ export function TestComparisonStep({
         setExpandedTests((prev) =>
             prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
         );
+    };
+
+    const flattenRow = (input: any, prefix = '', out: Record<string, any> = {}): Record<string, any> => {
+        if (input === null || input === undefined) return out;
+        if (typeof input !== 'object' || Array.isArray(input)) {
+            out[prefix || 'value'] = input;
+            return out;
+        }
+
+        Object.entries(input).forEach(([key, val]) => {
+            const nextKey = prefix ? `${prefix}.${key}` : key;
+            if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+                flattenRow(val, nextKey, out);
+            } else {
+                out[nextKey] = val;
+            }
+        });
+        return out;
+    };
+
+    const toCsvCell = (val: any) => {
+        if (val === null || val === undefined) return '';
+        if (typeof val === 'object') return JSON.stringify(val);
+        return String(val);
+    };
+
+    const downloadComparisonCsv = (tc: TestCase) => {
+        const details = tc.lastRunResult?.details;
+        if (!details) return;
+
+        const sourceRows = Array.isArray(details.sourceData) ? details.sourceData : [];
+        const targetRows = Array.isArray(details.targetData) ? details.targetData : [];
+        const comparisonRows = Array.isArray(details.comparisonData) ? details.comparisonData : [];
+        const mismatchRows = Array.isArray(details.mismatchData) ? details.mismatchData : [];
+
+        const derivedRows = comparisonRows.length > 0
+            ? comparisonRows.map((row: any, idx: number) => ({
+                rowIndex: idx + 1,
+                compareStatus: row?.status || 'unknown',
+                compareKeyHash: row?.compareKeyHash || '',
+                sourceRow: row?.sourceRow,
+                targetRow: row?.targetRow
+            }))
+            : Array.from({ length: Math.max(sourceRows.length, targetRows.length) }, (_, idx) => ({
+                rowIndex: idx + 1,
+                compareStatus: sourceRows[idx] && targetRows[idx]
+                    ? (JSON.stringify(sourceRows[idx]) === JSON.stringify(targetRows[idx]) ? 'matched' : 'different')
+                    : (sourceRows[idx] ? 'sourceOnly' : 'targetOnly'),
+                compareKeyHash: '',
+                sourceRow: sourceRows[idx],
+                targetRow: targetRows[idx]
+            }));
+
+        const mismatchByRowIndex = new Map<number, any>();
+        mismatchRows.forEach((row: any) => {
+            const idx = Number(row?.rowIndex || row?.row_index || 0);
+            if (idx > 0) mismatchByRowIndex.set(idx, row);
+        });
+
+        const exportRows = derivedRows.map((r: any) => {
+            const mismatch = mismatchByRowIndex.get(r.rowIndex);
+            return {
+                rowIndex: r.rowIndex,
+                compareStatus: r.compareStatus,
+                compareKeyHash: r.compareKeyHash,
+                sourceQuery: tc.sourceSQL,
+                targetQuery: tc.targetSQL,
+                mismatchType: mismatch?.mismatchType || '',
+                mismatchColumns: mismatch?.mismatchColumns || mismatch?.column || '',
+                sourceRow: r.sourceRow,
+                targetRow: r.targetRow
+            };
+        });
+
+        const flattened = exportRows.map((row: any) => {
+            const base: Record<string, any> = {
+                rowIndex: row.rowIndex,
+                compareStatus: row.compareStatus,
+                compareKeyHash: row.compareKeyHash,
+                sourceQuery: row.sourceQuery,
+                targetQuery: row.targetQuery,
+                mismatchType: row.mismatchType,
+                mismatchColumns: toCsvCell(row.mismatchColumns)
+            };
+            const srcFlat = flattenRow(row.sourceRow, 'source');
+            const tgtFlat = flattenRow(row.targetRow, 'target');
+            return { ...base, ...srcFlat, ...tgtFlat };
+        });
+
+        const allKeys = new Set<string>();
+        flattened.forEach((row) => Object.keys(row).forEach((key) => allKeys.add(key)));
+        const headers = Array.from(allKeys);
+
+        const csvRows = [
+            headers.join(','),
+            ...flattened.map((row) =>
+                headers
+                    .map((header) => `"${toCsvCell(row[header]).replace(/"/g, '""')}"`)
+                    .join(',')
+            )
+        ].join('\n');
+
+        const blob = new Blob([csvRows], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `${tc.name.replace(/[^a-z0-9]/gi, '_')}_Comparison_Full.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     };
 
     // If we have no test cases at all, show the empty state with generate button
@@ -650,42 +763,15 @@ export function TestComparisonStep({
                                             <p className={`flex-1 whitespace-pre-wrap text-xs ${tc.lastRunResult ? 'font-medium text-foreground' : 'italic text-muted-foreground'}`}>
                                                 {tc.lastRunResult ? tc.lastRunResult.message : 'Not executed yet'}
                                             </p>
-                                            {tc.lastRunResult?.details?.mismatchData && tc.lastRunResult.details.mismatchData.length > 0 && (
+                                            {tc.lastRunResult?.details && (
                                                 <Button
                                                     size="sm"
                                                     variant="outline"
                                                     className="h-7 text-[10px] gap-1 px-2 border-red-200 bg-red-50 text-red-700 hover:bg-red-100 shrink-0"
-                                                    onClick={() => {
-                                                        const data = tc.lastRunResult?.details?.mismatchData;
-                                                        if (!data) return;
-
-                                                        // Generate CSV
-                                                        const allKeys = new Set<string>();
-                                                        data.forEach(row => Object.keys(row).forEach(key => allKeys.add(key)));
-                                                        const headers = Array.from(allKeys);
-
-                                                        const csvRows = [
-                                                            headers.join(','), // Header row
-                                                            ...data.map(row => headers.map(header => {
-                                                                const val = row[header];
-                                                                const stringVal = val === null || val === undefined ? '' : String(val);
-                                                                return `"${stringVal.replace(/"/g, '""')}"`; // Escape double quotes
-                                                            }).join(','))
-                                                        ].join('\n');
-
-                                                        const blob = new Blob([csvRows], { type: 'text/csv;charset=utf-8;' });
-                                                        const url = URL.createObjectURL(blob);
-                                                        const link = document.createElement('a');
-                                                        link.setAttribute('href', url);
-                                                        link.setAttribute('download', `${tc.name.replace(/[^a-z0-9]/gi, '_')}_Mismatches.csv`);
-                                                        link.style.visibility = 'hidden';
-                                                        document.body.appendChild(link);
-                                                        link.click();
-                                                        document.body.removeChild(link);
-                                                    }}
+                                                    onClick={() => downloadComparisonCsv(tc)}
                                                 >
                                                     <Download className="h-3 w-3" />
-                                                    Download Mismatches (CSV)
+                                                    Download Full Compare (CSV)
                                                 </Button>
                                             )}
                                         </div>

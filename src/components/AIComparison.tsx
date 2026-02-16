@@ -60,6 +60,8 @@ interface TestCase {
             targetCount: number;
             sourceData?: any[];
             targetData?: any[];
+            comparisonData?: any[];
+            compareColumns?: string[];
             comparisonType: string;
             executionTime?: number;
             mismatchData?: any[];
@@ -102,6 +104,7 @@ const normalizeSavedRuns = (rawData: any): any[] => {
             const totalTests = typeof run?.summary?.totalTests === 'number'
                 ? run.summary.totalTests
                 : testCases.length;
+            const folderName = (run?.summary?.folderName ?? run?.folderName ?? '').toString().trim();
 
             return {
                 ...run,
@@ -109,7 +112,7 @@ const normalizeSavedRuns = (rawData: any): any[] => {
                     ...(run?.summary || {}),
                     isTestSuite: run?.summary?.isTestSuite ?? true,
                     fileName: run?.summary?.fileName || run?.fileName || 'Saved Run',
-                    folderName: run?.summary?.folderName || run?.folderName || 'Uncategorized',
+                    folderName: folderName || undefined,
                     totalTests,
                     passedTests,
                     failedTests,
@@ -369,6 +372,7 @@ export default function AIComparison() {
     const batchQueuedIndicesRef = useRef<number[]>([]);
     const batchProcessedIndicesRef = useRef<Set<number>>(new Set());
     const batchExcludedIndicesRef = useRef<Set<number>>(new Set());
+    const perTestToastDedupRef = useRef<Map<string, number>>(new Map());
 
     useEffect(() => {
         analysisRef.current = analysis;
@@ -668,12 +672,24 @@ export default function AIComparison() {
             }
 
             const selectedSheets = sheets.filter(s => selectedSheetNames.includes(s.name));
+            const sheetsForGeneration = selectedSheets.length > 0
+                ? selectedSheets
+                : (uploadedFile?.data ? [{ name: uploadedFile.name, data: uploadedFile.data }] : []);
+
+            if (sheetsForGeneration.length === 0) {
+                toast({
+                    title: "No Data",
+                    description: "No sheet data available to generate test cases.",
+                    variant: "destructive"
+                });
+                return;
+            }
             const allTestCases = [];
             const allSourceTables = new Set<string>();
             const allTargetTables = new Set<string>();
 
             // Generate tests for EACH sheet
-            for (const sheet of selectedSheets) {
+            for (const sheet of sheetsForGeneration) {
                 // 1. Generate mapping-specific tests (column-level)
                 const analyzed = generateMappingSpecificTests(
                     sheet.data,
@@ -729,7 +745,7 @@ export default function AIComparison() {
 
             toast({
                 title: "Test Cases Ready!",
-                description: `Generated ${allTestCases.length} test cases (mapping + ETL) from ${selectedSheets.length} sheets`
+                description: `Generated ${allTestCases.length} test cases (mapping + ETL) from ${sheetsForGeneration.length} sheet(s)`
             });
         } catch (error) {
             console.error('Test generation error:', error);
@@ -742,23 +758,8 @@ export default function AIComparison() {
     };
 
     const handleRegenerateTestCases = async () => {
-        // Priority: Multi-sheet selection
-        if (sheets.length > 0 && selectedSheetNames.length > 0) {
-            const sheetsToAnalyze = sheets.filter(s => selectedSheetNames.includes(s.name));
-            if (sheetsToAnalyze.length > 0) {
-                await analyzeMapping(sheetsToAnalyze);
-                return;
-            }
-        }
-
-        // Fallback: Single uploaded file
-        if (uploadedFile?.data) {
-            // analyzeMapping now expects an array of sheets, so we wrap the single file
-            await analyzeMapping([{ name: uploadedFile.name, data: uploadedFile.data }]);
-            return;
-        }
-
-        toast({ title: "No Data", description: "Please upload a file first.", variant: "destructive" });
+        // Regeneration should rebuild tests, not only re-analyze mappings.
+        await handleProceedToTests();
     };
 
     // --- CRUD Operations for Test Cases ---
@@ -848,6 +849,77 @@ export default function AIComparison() {
         return `Execution failed: ${raw}`;
     };
 
+    const extractMismatchEntries = (result: any): any[] => {
+        const direct = Array.isArray(result?.mismatches) ? result.mismatches : [];
+        const sampleCamel = Array.isArray(result?.sampleMismatches) ? result.sampleMismatches : [];
+        const sampleSnake = Array.isArray(result?.sample_mismatches) ? result.sample_mismatches : [];
+
+        const columnMismatchRows = Array.isArray(result?.column_mismatches)
+            ? result.column_mismatches.flatMap((cm: any) => {
+                if (!Array.isArray(cm?.mismatches)) return [];
+                return cm.mismatches.map((m: any) => ({
+                    mismatchType: 'columnMismatch',
+                    column: cm?.column || cm?.columnName || m?.column,
+                    rowIndex: m?.rowIndex ?? m?.row_index,
+                    key: m?.key,
+                    sourceValue: m?.sourceValue ?? m?.source_value,
+                    targetValue: m?.targetValue ?? m?.target_value
+                }));
+            })
+            : [];
+
+        const all = [...direct, ...sampleCamel, ...sampleSnake, ...columnMismatchRows].filter(Boolean);
+        return all;
+    };
+
+    const normalizeMismatchEntry = (entry: any, index: number): any => {
+        if (!entry || typeof entry !== 'object') {
+            return {
+                mismatchType: 'valueMismatch',
+                rowIndex: index + 1,
+                sourceRow: entry
+            };
+        }
+
+        const type = String(entry.mismatchType || entry.type || '').toLowerCase();
+        const sourceRow = entry.sourceRow ?? entry.source_row ?? (type.includes('source') ? (entry.row ?? entry.source) : undefined);
+        const targetRow = entry.targetRow ?? entry.target_row ?? (type.includes('target') ? (entry.row ?? entry.target) : undefined);
+        const rowIndex = entry.rowIndex ?? entry.row_index ?? entry.index ?? (index + 1);
+
+        if (type === 'source_only' || type === 'sourceonly' || type === 'missingintarget') {
+            return {
+                mismatchType: 'sourceOnly',
+                rowIndex,
+                sourceRow
+            };
+        }
+
+        if (type === 'target_only' || type === 'targetonly' || type === 'missinginsource') {
+            return {
+                mismatchType: 'targetOnly',
+                rowIndex,
+                targetRow
+            };
+        }
+
+        if (type === 'columnmismatch' || entry.column || entry.sourceValue !== undefined || entry.targetValue !== undefined) {
+            return {
+                mismatchType: 'columnMismatch',
+                rowIndex,
+                column: entry.column ?? entry.columnName ?? 'unknown',
+                key: entry.key,
+                sourceValue: entry.sourceValue ?? entry.source_value,
+                targetValue: entry.targetValue ?? entry.target_value
+            };
+        }
+
+        return {
+            mismatchType: entry.mismatchType || entry.type || 'valueMismatch',
+            rowIndex,
+            ...entry
+        };
+    };
+
     const buildActualResultMessage = (result: any, success: boolean): string => {
         const baseMessage = String(result?.message || '').trim();
         const summary = result?.summary || {};
@@ -857,11 +929,7 @@ export default function AIComparison() {
         const mismatchedRows = Number(summary?.mismatchedRows ?? 0);
         const sourceOnlyRows = Number(summary?.sourceOnlyRows ?? 0);
         const targetOnlyRows = Number(summary?.targetOnlyRows ?? 0);
-        const mismatches = Array.isArray(result?.mismatches)
-            ? result.mismatches
-            : Array.isArray(result?.sampleMismatches)
-                ? result.sampleMismatches
-                : [];
+        const mismatches = extractMismatchEntries(result);
         const errorText = String(result?.error || '').trim();
 
         if (mismatchedRows > 0 || sourceOnlyRows > 0 || targetOnlyRows > 0 || mismatches.length > 0) {
@@ -881,7 +949,7 @@ export default function AIComparison() {
             const keys = firstMismatch && typeof firstMismatch === 'object'
                 ? Object.keys(firstMismatch).slice(0, 3).join(', ')
                 : '';
-            return `Mismatch found: ${mismatches.length} row(s) differ between source and target.${keys ? ` Sample fields: ${keys}.` : ''}`;
+            return `Mismatch found: ${mismatches.length} row(s) differ between source and target.${keys ? ` Fields: ${keys}.` : ''}`;
         }
 
         if (errorText) {
@@ -905,11 +973,7 @@ export default function AIComparison() {
         const mismatchedRows = Number(summary?.mismatchedRows ?? 0);
         const sourceOnlyRows = Number(summary?.sourceOnlyRows ?? 0);
         const targetOnlyRows = Number(summary?.targetOnlyRows ?? 0);
-        const mismatches = Array.isArray(result?.mismatches)
-            ? result.mismatches
-            : Array.isArray(result?.sampleMismatches)
-                ? result.sampleMismatches
-                : [];
+        const mismatches = extractMismatchEntries(result);
 
         const hasDiff = mismatchedRows > 0 || sourceOnlyRows > 0 || targetOnlyRows > 0 || mismatches.length > 0;
 
@@ -929,12 +993,114 @@ export default function AIComparison() {
         return sourceRows === targetRows;
     };
 
+    const buildMismatchReportRows = (result: any): any[] => {
+        const explicitMismatches = extractMismatchEntries(result).map((entry, idx) => normalizeMismatchEntry(entry, idx));
+        if (explicitMismatches.length > 0) return explicitMismatches;
+
+        const sourceRows = Array.isArray(result?.source_data) ? result.source_data : [];
+        const targetRows = Array.isArray(result?.target_data) ? result.target_data : [];
+        const isObjectLike = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+        const isSameValue = (a: any, b: any) => {
+            if (a === b) return true;
+            if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
+            return JSON.stringify(a) === JSON.stringify(b);
+        };
+
+        if (sourceRows.length > 0 || targetRows.length > 0) {
+            const maxLen = Math.max(sourceRows.length, targetRows.length);
+            const derived: any[] = [];
+
+            for (let i = 0; i < maxLen; i++) {
+                const src = sourceRows[i];
+                const tgt = targetRows[i];
+
+                if (src !== undefined && tgt !== undefined) {
+                    if (!isSameValue(src, tgt)) {
+                        const mismatchColumns: Array<{ column: string; sourceValue: any; targetValue: any }> = [];
+                        if (isObjectLike(src) || isObjectLike(tgt)) {
+                            const srcObj = isObjectLike(src) ? src : { value: src };
+                            const tgtObj = isObjectLike(tgt) ? tgt : { value: tgt };
+                            const keys = new Set<string>([...Object.keys(srcObj), ...Object.keys(tgtObj)]);
+                            keys.forEach((key) => {
+                                const sourceValue = (srcObj as any)[key];
+                                const targetValue = (tgtObj as any)[key];
+                                if (!isSameValue(sourceValue, targetValue)) {
+                                    mismatchColumns.push({ column: key, sourceValue, targetValue });
+                                }
+                            });
+                        } else {
+                            mismatchColumns.push({ column: 'value', sourceValue: src, targetValue: tgt });
+                        }
+
+                        derived.push({
+                            mismatchType: 'valueMismatch',
+                            rowIndex: i + 1,
+                            mismatchColumnCount: mismatchColumns.length,
+                            mismatchColumns,
+                            sourceRow: src,
+                            targetRow: tgt
+                        });
+                    }
+                } else if (src !== undefined) {
+                    derived.push({
+                        mismatchType: 'sourceOnly',
+                        rowIndex: i + 1,
+                        mismatchColumnCount: isObjectLike(src) ? Object.keys(src).length : 1,
+                        sourceRow: src
+                    });
+                } else if (tgt !== undefined) {
+                    derived.push({
+                        mismatchType: 'targetOnly',
+                        rowIndex: i + 1,
+                        mismatchColumnCount: isObjectLike(tgt) ? Object.keys(tgt).length : 1,
+                        targetRow: tgt
+                    });
+                }
+            }
+
+            if (derived.length > 0) return derived;
+        }
+
+        const summary = result?.summary || {};
+        const mismatchedRows = Number(summary?.mismatchedRows ?? 0);
+        const sourceOnlyRows = Number(summary?.sourceOnlyRows ?? 0);
+        const targetOnlyRows = Number(summary?.targetOnlyRows ?? 0);
+
+        if (mismatchedRows > 0 || sourceOnlyRows > 0 || targetOnlyRows > 0) {
+            return [{
+                mismatchType: 'summaryOnly',
+                mismatchedRows,
+                sourceOnlyRows,
+                targetOnlyRows,
+                note: 'Detailed mismatch rows were not returned by the execution service.'
+            }];
+        }
+
+        return [];
+    };
+
     // --- Test Execution Logic (Agent-Based) ---
     const handleRunTestCase = async (
         testCase: TestCase,
         context?: { sequenceLabel?: string; suppressToast?: boolean }
     ): Promise<'pass' | 'fail' | 'skipped'> => {
         const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
+        const shouldShowPerTestToast = !context?.suppressToast;
+        const notifyPerTest = (payload: { title: string; description: string; variant?: "default" | "destructive" }) => {
+            if (!shouldShowPerTestToast) return;
+            // Guard against duplicate terminal notifications caused by repeated poll terminal callbacks.
+            const now = Date.now();
+            const dedupeWindowMs = 5000;
+            const cache = perTestToastDedupRef.current;
+            for (const [key, ts] of cache.entries()) {
+                if (now - ts > dedupeWindowMs) cache.delete(key);
+            }
+            const key = `${testCase.name}|${payload.title}|${payload.variant || 'default'}|${payload.description}`;
+            const lastSeen = cache.get(key);
+            if (typeof lastSeen === 'number' && now - lastSeen <= dedupeWindowMs) return;
+            cache.set(key, now);
+            toast(payload);
+        };
 
         if (!selectedAgentId) {
             toast({ title: "Agent Required", description: "Please select an active ETL Agent in Step 1.", variant: "destructive" });
@@ -958,7 +1124,7 @@ export default function AIComparison() {
 
         updateStatus({ status: 'running', message: 'Queued for Agent...', timestamp: new Date() });
         setCurrentExecutingTestName(testCase.name);
-        if (!context?.suppressToast) {
+        if (shouldShowPerTestToast) {
             toast({ title: "Job Queued", description: `Agent '${agents.find(a => a.id === selectedAgentId)?.agent_name || 'Unknown'}' requested.` });
         }
 
@@ -1000,6 +1166,7 @@ export default function AIComparison() {
                 let timeoutId: ReturnType<typeof setTimeout> | null = null;
                 let resolved = false;
                 let notFoundPollErrors = 0;
+                let terminalStateProcessing = false;
 
                 const clearTracking = () => {
                     if (pollInterval) {
@@ -1048,6 +1215,7 @@ export default function AIComparison() {
                 };
 
                 pollInterval = setInterval(async () => {
+                    if (resolved || terminalStateProcessing) return;
                     const { data: statusData, error: statusError } = await compareApi.status(jobId);
 
                     if (statusError) {
@@ -1066,61 +1234,57 @@ export default function AIComparison() {
                     const summary = resultPayload?.summary || {};
                     const mismatches = Array.isArray(resultPayload?.mismatches)
                         ? resultPayload.mismatches
-                        : Array.isArray(resultPayload?.sampleMismatches)
-                            ? resultPayload.sampleMismatches
-                            : [];
+                        : [];
                     console.log("Job Status:", jobStatus);
 
                     if (jobStatus === 'completed') {
-                        const hasRichPayload =
-                            !!resultPayload?.summary ||
-                            Array.isArray(resultPayload?.mismatches) ||
-                            Array.isArray(resultPayload?.sampleMismatches) ||
-                            Array.isArray(resultPayload?.source_data) ||
-                            Array.isArray(resultPayload?.target_data);
+                        terminalStateProcessing = true;
+                        // Always fetch final result payload to prefer full mismatch rows over sampled status payload.
                         let result = resultPayload || {};
-
-                        // Only fetch detailed result if status payload is incomplete.
-                        if (!hasRichPayload) {
-                            const { data: resultData } = await compareApi.results(jobId);
-                            result = resultData?.result || resultPayload || {};
-                        }
+                        const { data: resultData } = await compareApi.results(jobId);
+                        result = resultData?.result || resultPayload || {};
 
                         const success = evaluateComparisonSuccess(result);
                         const message = buildActualResultMessage(result, success);
 
+                        const mismatchReportRows = buildMismatchReportRows(result);
                         const details = {
                             sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
                             targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
                             sourceData: result.source_data || [],
                             targetData: result.target_data || [],
+                            comparisonData: result.comparison_rows || [],
+                            compareColumns: result.compareColumns || [],
                             comparisonType: testCase.category || 'general',
-                            mismatchData: Array.isArray(result?.mismatches)
-                                ? result.mismatches
-                                : Array.isArray(result?.sampleMismatches)
-                                    ? result.sampleMismatches
-                                    : []
+                            mismatchData: mismatchReportRows
                         };
 
                         finalize(success ? 'pass' : 'fail', message, details);
-                        toast({
+                        notifyPerTest({
                             title: "Execution Completed",
                             description: `${success ? 'Pass' : 'Fail'}: ${message}`,
                             variant: success ? "default" : "destructive"
                         });
                     } else if (jobStatus === 'failed' || jobStatus === 'error') {
+                        terminalStateProcessing = true;
                         // Some ETL mismatches are persisted as failed with valid comparison summary.
                         if (summary && (typeof summary?.mismatchedRows === 'number' || mismatches.length > 0)) {
-                            const message = buildActualResultMessage(resultPayload, false);
+                            // Try to fetch full result for failed comparisons as well.
+                            const { data: failedResultData } = await compareApi.results(jobId);
+                            const failedResult = failedResultData?.result || resultPayload || {};
+                            const fullMismatches = buildMismatchReportRows(failedResult);
+                            const message = buildActualResultMessage(failedResult, false);
                             finalize('fail', message, {
-                                sourceCount: summary?.sourceRowCount ?? 0,
-                                targetCount: summary?.targetRowCount ?? 0,
-                                sourceData: resultPayload?.source_data || [],
-                                targetData: resultPayload?.target_data || [],
+                                sourceCount: failedResult?.summary?.sourceRowCount ?? summary?.sourceRowCount ?? 0,
+                                targetCount: failedResult?.summary?.targetRowCount ?? summary?.targetRowCount ?? 0,
+                                sourceData: failedResult?.source_data || resultPayload?.source_data || [],
+                                targetData: failedResult?.target_data || resultPayload?.target_data || [],
+                                comparisonData: failedResult?.comparison_rows || resultPayload?.comparison_rows || [],
+                                compareColumns: failedResult?.compareColumns || resultPayload?.compareColumns || [],
                                 comparisonType: testCase.category || 'general',
-                                mismatchData: mismatches
+                                mismatchData: fullMismatches
                             });
-                            toast({ title: "Mismatch Detected", description: message, variant: "destructive" });
+                            notifyPerTest({ title: "Mismatch Detected", description: message, variant: "destructive" });
                             return;
                         }
 
@@ -1128,7 +1292,7 @@ export default function AIComparison() {
                             ? formatExecutionErrorMessage(errorText, 'execution')
                             : "Execution failed before comparison result was produced.";
                         finalize('fail', errorMsg);
-                        toast({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
+                        notifyPerTest({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
                     }
                 }, 1000); // Poll every 1 second for faster status updates
 
@@ -1671,23 +1835,24 @@ export default function AIComparison() {
         setIsSaveDialogOpen(true);
     };
 
-    const handleSaveResultsConfirm = async (name: string, folderName: string) => {
+    const handleSaveResultsConfirm = async (name: string, folderName?: string) => {
         if (!analysis) return; // Connections are optional now for saving, though usually present
 
         try {
             const passedTests = analysis.testCases.filter(tc => tc.lastRunResult?.status === 'pass').length;
             const failedTests = analysis.testCases.filter(tc => tc.lastRunResult?.status === 'fail').length;
+            const normalizedFolderName = folderName?.trim() || undefined;
             const res = await reportsApi.saveTestRun({
                 sourceConnectionId: multiSourceMode ? null : sourceConnections[0]?.id,
                 sourceConnectionIds: multiSourceMode ? sourceConnections.map(c => c.id).filter(Boolean) : (sourceConnections[0]?.id ? [sourceConnections[0].id] : []),
                 targetConnectionId: targetConnection?.id, // Can be undefined
                 testCases: analysis.testCases,
                 fileName: name,
-                folderName: folderName,
+                folderName: normalizedFolderName,
                 summary: {
                     isTestSuite: true,
                     fileName: name,
-                    folderName: folderName || 'Uncategorized',
+                    folderName: normalizedFolderName,
                     totalTests: analysis.testCases.length,
                     passedTests,
                     failedTests,

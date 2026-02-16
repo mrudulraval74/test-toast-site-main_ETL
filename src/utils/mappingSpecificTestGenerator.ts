@@ -3,7 +3,6 @@
 
 import { parseMappingSheet } from './mappingSheetParser';
 import { DatabaseSchema, findTableInSchema, findColumnInTable } from './schemaFetcher';
-import { generateDataQualityTests } from './test-generators/dataQualityTests';
 
 export type TestCaseCategory = 'direct_move' | 'business_rule' | 'transformation' | 'general' | 'structure';
 export type TestCaseSeverity = 'critical' | 'major' | 'minor';
@@ -128,6 +127,11 @@ function makeSafeAlias(base: string, used: Set<string>, fallback: string): strin
     return alias;
 }
 
+function hasKeyword(value: any, keywords: string[]): boolean {
+    const text = String(value || '').toUpperCase();
+    return keywords.some((kw) => text.includes(kw.toUpperCase()));
+}
+
 export function generateMappingSpecificTests(
     mappingData: any[],
     sourceSchema?: DatabaseSchema | null,
@@ -239,6 +243,13 @@ export function generateMappingSpecificTests(
     };
     const quoteSourceColumn = (name: string) => quoteId(normalizeIdentifier(name), sourceDialect);
     const quoteTargetColumn = (name: string) => quoteId(normalizeIdentifier(name), targetDialect);
+    const buildDistinctKeyExpr = (keys: string, dialect: string) => {
+        const parts = keys.split(',').map(k => k.trim()).filter(Boolean);
+        if (parts.length <= 1) return parts[0] || '1';
+        if (dialect === 'mysql') return `CONCAT_WS('|', ${parts.join(', ')})`;
+        if (dialect === 'postgres' || dialect === 'oracle') return parts.join(` || '|' || `);
+        return parts.join(` + '|' + `);
+    };
 
     const buildBusinessRuleExpression = (logicValue: any, sourceColExpr: string) => {
         const raw = String(logicValue || '').trim();
@@ -270,42 +281,7 @@ export function generateMappingSpecificTests(
         const qSrc = quoteSource(sourceTable);
         const qTgt = quoteTarget(targetTable);
         const phase = getPhasePrefix(sourceTable, targetTable);
-
-        // 1. Structure Validation (Target vs Mapping Sheet) remained same...
-        const generateMappingTruthSQL = (mapEntries: any[]) => {
-            if (mapEntries.length === 0) return "SELECT 'No Mappings' as COLUMN_NAME";
-            return mapEntries.map((m, i) => {
-                const col = m.targetColumn || 'Unknown';
-                const dtype = m.dataType || 'ANY';
-                return `SELECT '${col}' as COLUMN_NAME, '${dtype}' as DATA_TYPE`;
-            }).join(' UNION ALL ');
-        };
-
-        const getStructureSQL = (tableName: string, dialect: string) => {
-            const shortName = tableName.split('.').pop();
-            return `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '${shortName}'`;
-        };
-
-        testCases.push({
-            name: `${phase} | 1. Structure Validation (Target vs Mapping) | ${targetTable}`,
-            description: `Verify that the columns and data types in ${targetTable} exactly match the definitions in the mapping sheet.`,
-            sourceSQL: generateMappingTruthSQL(mappings),
-            targetSQL: getStructureSQL(targetTable, targetDialect),
-            expectedResult: 'Target table structure must match the column list and types defined in the mapping document.',
-            category: 'structure',
-            severity: 'major'
-        });
-
-        // 2. Count Validation (Sources vs Target)
-        testCases.push({
-            name: `${phase} | 2. Count Validation | ${targetTable}`,
-            description: `Verify record count parity between ${sourceTable} and ${targetTable}`,
-            sourceSQL: `SELECT COUNT(*) as TotalRecords FROM ${qSrc}`,
-            targetSQL: `SELECT COUNT(*) as TotalRecords FROM ${qTgt}`,
-            expectedResult: 'Row counts must be identical between sources and target.',
-            category: 'general',
-            severity: 'critical'
-        });
+        const withPhase = (title: string) => phase === 'Source To Landing' ? title : `${phase} | ${title}`;
 
         // 3. Null Data Validation (Sources vs Target)
         const firstMapped = mappings.find(m => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
@@ -313,7 +289,7 @@ export function generateMappingSpecificTests(
             const sourceNullCol = quoteSourceColumn(resolveColumnName(sourceSchema, sourceTable, firstMapped.sourceColumn));
             const targetNullCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMapped.targetColumn));
             testCases.push({
-                name: `${phase} | 3. Null Data Validation | ${targetTable}`,
+                name: `${withPhase('3. Null Data Validation')} | ${targetTable}`,
                 description: `Verify null-count parity for mapped column ${firstMapped.sourceColumn} -> ${firstMapped.targetColumn}.`,
                 sourceSQL: `SELECT COUNT(*) as NullCount FROM ${qSrc} WHERE ${sourceNullCol} IS NULL`,
                 targetSQL: `SELECT COUNT(*) as NullCount FROM ${qTgt} WHERE ${targetNullCol} IS NULL`,
@@ -355,7 +331,7 @@ export function generateMappingSpecificTests(
         const tKeyList = pkTgt.map(c => quoteTargetColumn(c)).join(', ');
 
         testCases.push({
-            name: `${phase} | 4. Duplicate Data Validation | ${targetTable}`,
+            name: `${withPhase('4. Duplicate Data Validation')} | ${targetTable}`,
             description: `Verify uniqueness in ${targetTable} based on keys: ${tKeyList}`,
             sourceSQL: `SELECT ${sKeyList}, COUNT(*) as duplicate_Count FROM ${qSrc} GROUP BY ${sKeyList} HAVING COUNT(*) > 1`,
             targetSQL: `SELECT ${tKeyList}, COUNT(*) as duplicate_Count FROM ${qTgt} GROUP BY ${tKeyList} HAVING COUNT(*) > 1`,
@@ -364,21 +340,21 @@ export function generateMappingSpecificTests(
             severity: 'critical'
         });
 
-        // 5. Table Constraint Validation
-        const getConstraintSQL = (tableName: string) => {
-            const shortName = tableName.split('.').pop();
-            return `SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = '${shortName}'`;
-        };
-
-        testCases.push({
-            name: `${phase} | 5. Table Constraint Validation | ${targetTable}`,
-            description: `Verify constraints (PK, SK, BK) in ${targetTable} against requirements.`,
-            sourceSQL: getConstraintSQL(targetTable), // Comparing target constraints against itself/metadata
-            targetSQL: getConstraintSQL(targetTable),
-            expectedResult: 'All required table constraints should be correctly implemented.',
-            category: 'structure',
-            severity: 'major'
-        });
+        // Validate values between source and target
+        const firstMappedForValue = mappings.find((m) => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
+        if (firstMappedForValue) {
+            const srcValCol = quoteSourceColumn(resolveColumnName(sourceSchema, sourceTable, firstMappedForValue.sourceColumn));
+            const tgtValCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMappedForValue.targetColumn));
+            testCases.push({
+                name: `${withPhase('Validate Data Values')} | ${targetTable}`,
+                description: `Validate source and target values for mapped column ${firstMappedForValue.sourceColumn} -> ${firstMappedForValue.targetColumn}.`,
+                sourceSQL: `SELECT ${sKeyList}, ${srcValCol} AS ValueData FROM ${qSrc} ORDER BY ${sKeyList}`,
+                targetSQL: `SELECT ${tKeyList}, ${tgtValCol} AS ValueData FROM ${qTgt} ORDER BY ${tKeyList}`,
+                expectedResult: 'Data values should match source and target as per ETL mapping.',
+                category: 'direct_move',
+                severity: 'critical'
+            });
+        }
 
         // 6. Data Accuracy Validation
         // 6a. Consolidated Direct Moves (One test case for all direct columns)
@@ -408,7 +384,7 @@ export function generateMappingSpecificTests(
             const orderTgt = keyAliases.map(k => quoteTargetColumn(k)).join(', ');
 
             testCases.push({
-                name: `${phase} | 6. Data Accuracy: Direct Moves (Consolidated) | ${targetTable}`,
+                name: `${withPhase('6. Data Accuracy: Direct Moves (Consolidated)')} | ${targetTable}`,
                 description: `Validate ${direct.length} direct mappings for ${targetTable} in one pass.`,
                 sourceSQL: `SELECT ${[...sourceKeySelect, ...mappedSelects.map(m => m.src)].join(', ')} FROM ${qSrc} s ORDER BY ${orderSrc}`,
                 targetSQL: `SELECT ${[...targetKeySelect, ...mappedSelects.map(m => m.tgt)].join(', ')} FROM ${qTgt} t ORDER BY ${orderTgt}`,
@@ -439,7 +415,7 @@ export function generateMappingSpecificTests(
             const orderTgt = keyAliases.map(k => quoteTargetColumn(k)).join(', ');
 
             testCases.push({
-                name: `${phase} | 6. Data Accuracy: Business Rule: ${m.targetColumn} | ${targetTable}`,
+                name: `${withPhase(`6. Data Accuracy: Business Rule: ${m.targetColumn}`)} | ${targetTable}`,
                 description: `Validating: [${m.targetColumn}]. Logic: ${m.transformationLogic}`,
                 sourceSQL: `SELECT ${[...sourceKeySelect, `${srcExpr} AS ${quoteSourceColumn(alias)}`].join(', ')} FROM ${qSrc} s ORDER BY ${orderSrc}`,
                 targetSQL: `SELECT ${[...targetKeySelect, `t.${quoteTargetColumn(tCol)} AS ${quoteTargetColumn(alias)}`].join(', ')} FROM ${qTgt} t ORDER BY ${orderTgt}`,
@@ -449,47 +425,6 @@ export function generateMappingSpecificTests(
             });
         });
     });
-
-    // --- PHASE 4: SYSTEM INTEGRATION TESTS (Audit & Rejects) ---
-    const allTgtTables = Array.from(parsed.targetTables);
-    const hasLanding = allTgtTables.some(t => t.toUpperCase().includes('LANDING'));
-    const hasEDW = allTgtTables.some(t => t.toUpperCase().includes('EDW'));
-    const hasStage = allTgtTables.some(t => t.toUpperCase().includes('STAGE'));
-
-    if (hasLanding || hasEDW || hasStage) {
-        let phaseNum = 1;
-        if (hasStage) phaseNum = 2;
-        if (hasEDW) phaseNum = 3;
-
-        const metadataTable = (phaseNum >= 3) ? '[Metadata].[EDWLanding]' : '[Metadata].[DLLanding]';
-
-        testCases.push({
-            name: `System: Pipeline Audit Trace | Validate execution for Phase ${phaseNum}`,
-            description: `Verify entries in [Audit].[PipelineExecutionAudit] for Phase ${phaseNum}.`,
-            sourceSQL: `SELECT pa.objectId, pea.ETLId, pa.status, pa.StartTimestamp, pa.EndTimestamp, pea.PipelineExecutionAuditId, pa.ChildPipelineRunId, pa.EffectedRowInserted, pa.EffectedRowUpdated, pa.Phase 
-                       FROM [Audit].[PipelineExecutionAudit] pea
-                       INNER JOIN [Audit].[PipelineAudit] pa ON pea.ParentPipelineRunId = pa.ParentPipelineRunId
-                       INNER JOIN ${metadataTable} m ON pa.objectId = m.objectId
-                       WHERE pa.Phase IN (${phaseNum}, ${phaseNum + 1})`,
-            targetSQL: `SELECT count(*) as AuditCount FROM [Audit].[PipelineExecutionAudit] WHERE Phase = ${phaseNum} AND Status = 'Success'`,
-            expectedResult: 'Record should exist with correct timestamps and row counts.',
-            category: 'general',
-            severity: 'critical'
-        });
-
-        testCases.push({
-            name: `System: Reject Table Check | Validate rejected records | Phase ${phaseNum}`,
-            description: `Verify if any records were rejected during Phase ${phaseNum}.`,
-            sourceSQL: `SELECT count(*) as RejectCount, pa.objectId FROM [Audit].[PipelineExecutionAudit] pea 
-                       INNER JOIN [Audit].[PipelineAudit] pa ON pea.ParentPipelineRunId = pa.ParentPipelineRunId
-                       WHERE pa.Status = 'Rejected' AND pa.Phase = ${phaseNum}
-                       GROUP BY pa.objectId`,
-            targetSQL: `SELECT count(*) as RejectCount FROM [Audit].[PipelineExecutionAudit] WHERE Status = 'Rejected' AND Phase = ${phaseNum}`,
-            expectedResult: 'Reject status should be tracked correctly in the audit system.',
-            category: 'general',
-            severity: 'major'
-        });
-    }
 
     const businessRules = [
         `📊 Analyzed ${mappingData.length} rows from mapping sheet`,

@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronRight, ChevronDown, Folder, FileText, Trash2, Plus, Search } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,9 +39,10 @@ interface TestHistorySidebarProps {
 }
 
 export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDeleteFolder, className }: TestHistorySidebarProps) {
-    const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['Uncategorized']));
+    const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRuns, setSelectedRuns] = useState<string[]>([]); // For bulk delete
+    const noFolderLabel = 'No Folder';
 
     // Toggle folder expansion
     const toggleFolder = (folder: string) => {
@@ -56,7 +57,7 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
 
     // Group runs by folder
     const groupedRuns = useMemo(() => {
-        const groups: Record<string, TestRun[]> = { 'Uncategorized': [] };
+        const groups: Record<string, TestRun[]> = {};
 
         savedRuns.forEach(run => {
             // Filter by search term
@@ -64,7 +65,7 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
                 return;
             }
 
-            const folder = run.summary.folderName || 'Uncategorized';
+            const folder = run.summary.folderName?.trim() || noFolderLabel;
             if (!groups[folder]) {
                 groups[folder] = [];
             }
@@ -79,13 +80,17 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
         }
 
         return groups;
-    }, [savedRuns, searchTerm]);
+    }, [savedRuns, searchTerm, noFolderLabel]);
 
-    const sortedFolders = Object.keys(groupedRuns).sort((a, b) => {
-        if (a === 'Uncategorized') return 1;
-        if (b === 'Uncategorized') return -1;
-        return a.localeCompare(b);
-    });
+    const sortedFolders = Object.keys(groupedRuns).sort((a, b) => a.localeCompare(b));
+
+    useEffect(() => {
+        setExpandedFolders((prev) => {
+            const next = new Set(prev);
+            sortedFolders.forEach((folder) => next.add(folder));
+            return next;
+        });
+    }, [sortedFolders]);
 
     return (
         <div className={cn("flex flex-col h-full border-r bg-muted/10", className)}>
@@ -187,7 +192,7 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
                                 </div>
 
                                 {/* Folder Delete Action */}
-                                {onDeleteFolder && folder !== 'Uncategorized' && (
+                                {onDeleteFolder && folder !== noFolderLabel && (
                                     <div className="opacity-0 group-hover:opacity-100 transition-opacity px-1" onClick={(e) => e.stopPropagation()}>
                                         <AlertDialog>
                                             <AlertDialogTrigger asChild>
@@ -309,7 +314,7 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
 interface SaveRunDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    onSave: (name: string, folder: string) => void;
+    onSave: (name: string, folder?: string) => void;
     defaultName: string;
     existingFolders: string[];
 }
@@ -333,14 +338,25 @@ import {
 
 export function SaveRunDialog({ open, onOpenChange, onSave, defaultName, existingFolders }: SaveRunDialogProps) {
     const [name, setName] = useState(defaultName);
-    const [folder, setFolder] = useState('Uncategorized');
+    const [folder, setFolder] = useState('');
     const [isCustomFolder, setIsCustomFolder] = useState(false);
     const [customFolder, setCustomFolder] = useState('');
+    const normalizedExistingFolders = useMemo(
+        () => Array.from(new Set(existingFolders.map((f) => f?.trim()).filter(Boolean) as string[])),
+        [existingFolders]
+    );
+
+    useEffect(() => {
+        if (!open) return;
+        setName(defaultName);
+        setFolder('');
+        setCustomFolder('');
+        setIsCustomFolder(normalizedExistingFolders.length === 0);
+    }, [open, defaultName, normalizedExistingFolders.length]);
 
     const handleSave = () => {
-        const finalFolder = isCustomFolder ? customFolder : folder;
-        if (!finalFolder) return;
-        onSave(name, finalFolder);
+        const finalFolder = isCustomFolder ? customFolder.trim() : folder.trim();
+        onSave(name, finalFolder || undefined);
         onOpenChange(false);
     };
 
@@ -375,8 +391,7 @@ export function SaveRunDialog({ open, onOpenChange, onSave, defaultName, existin
                                         <SelectValue placeholder="Select folder" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="Uncategorized">Uncategorized</SelectItem>
-                                        {existingFolders.filter(f => f !== 'Uncategorized').map(f => (
+                                        {normalizedExistingFolders.map(f => (
                                             <SelectItem key={f} value={f}>{f}</SelectItem>
                                         ))}
                                         <SelectItem value="new_custom" className="text-primary font-medium">
@@ -399,7 +414,9 @@ export function SaveRunDialog({ open, onOpenChange, onSave, defaultName, existin
                     </div>
                 </div>
                 <DialogFooter>
-                    <Button onClick={handleSave}>Save</Button>
+                    <Button onClick={handleSave} disabled={name.trim().length === 0 || (isCustomFolder && customFolder.trim().length === 0)}>
+                        Save
+                    </Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>

@@ -6,6 +6,10 @@ export interface ColumnMapping {
     targetColumn: string;
     sourceTable?: string;
     targetTable?: string;
+    sourceDataType?: string;
+    targetDataType?: string;
+    notes?: string;
+    comments?: string;
     transformationType: 'direct_move' | 'lookup' | 'date_format' | 'trim' | 'null_handling' |
     'concatenation' | 'aggregation' | 'case_conversion' | 'string_replace' |
     'type_casting' | 'business_rule' | 'unknown';
@@ -65,6 +69,79 @@ function resolveCandidateColumn(value: any): string {
     return cleaned;
 }
 
+function normalizeEmbeddedHeaderRows(data: any[]): any[] {
+    if (!data.length) return data;
+
+    const firstRow = data[0];
+    if (!firstRow || typeof firstRow !== 'object') return data;
+
+    const originalKeys = Object.keys(firstRow);
+    if (originalKeys.length === 0) return data;
+
+    const headerHints = [
+        'target column',
+        'source column',
+        'source table',
+        'source schema',
+        'target table',
+        'target schema',
+        'transformation',
+        'business rule',
+        'target data type',
+        'source data type'
+    ];
+
+    let headerIndex = -1;
+    let bestScore = 0;
+    const limit = Math.min(data.length, 30);
+
+    for (let i = 0; i < limit; i++) {
+        const row = data[i];
+        if (!row || typeof row !== 'object') continue;
+
+        const values = originalKeys.map((k) => String((row as any)[k] ?? '').trim().toLowerCase());
+        let score = 0;
+        for (const value of values) {
+            if (!value) continue;
+            if (headerHints.some((hint) => value.includes(hint))) score++;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            headerIndex = i;
+        }
+    }
+
+    if (bestScore < 3 || headerIndex < 0) return data;
+
+    const headerRow = data[headerIndex];
+    const headers = originalKeys.map((k, idx) => {
+        const raw = String((headerRow as any)[k] ?? '').trim();
+        const normalized = raw.replace(/\s+/g, ' ').replace(/^[:=]+|[:=]+$/g, '').trim();
+        return normalized || `Column_${idx + 1}`;
+    });
+
+    const rebuilt: any[] = [];
+    for (let i = headerIndex + 1; i < data.length; i++) {
+        const row = data[i];
+        if (!row || typeof row !== 'object') continue;
+
+        const rebuiltRow: Record<string, any> = {};
+        let hasValue = false;
+
+        originalKeys.forEach((k, idx) => {
+            const value = (row as any)[k];
+            const normalizedValue = typeof value === 'string' ? value.trim() : value;
+            if (normalizedValue !== '' && normalizedValue != null) hasValue = true;
+            rebuiltRow[headers[idx]] = normalizedValue;
+        });
+
+        if (hasValue) rebuilt.push(rebuiltRow);
+    }
+
+    return rebuilt.length > 0 ? rebuilt : data;
+}
+
 /**
  * Intelligently parses any mapping sheet format with Extreme Intelligence
  */
@@ -73,11 +150,16 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
         return createEmptyResult();
     }
 
+    const normalizedData = normalizeEmbeddedHeaderRows(data);
+    if (normalizedData.length === 0) {
+        return createEmptyResult();
+    }
+
     // --- PHASE 1: HEADER DISCOVERY ---
     // Scan top 15 rows to find the "true" header row (the one with the most ETL keywords)
     let headerRowIdx = 0;
     let maxKeywordCount = 0;
-    const searchLimit = Math.min(data.length, 15);
+    const searchLimit = Math.min(normalizedData.length, 15);
 
     const etlKeywords = [
         'source', 'target', 'transformation', 'mapping', 'logic', 'rule', 'field', 'column',
@@ -85,7 +167,7 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
     ];
 
     for (let i = 0; i < searchLimit; i++) {
-        const row = data[i];
+        const row = normalizedData[i];
         if (!row) continue;
 
         const rowKeys = Object.keys(row);
@@ -110,7 +192,7 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
     console.log(`🔍 Header Discovery: Found metadata row at index ${headerRowIdx} (score: ${maxKeywordCount})`);
 
     // Slice data to start from the discovered header
-    const effectiveData = data.slice(headerRowIdx);
+    const effectiveData = normalizedData.slice(headerRowIdx);
     if (effectiveData.length === 0) return createEmptyResult();
 
     const firstRow = effectiveData[0];
@@ -197,6 +279,9 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
     const tgtSchemaCol = findBestColumn(['target schema', 'tgt_schema', 'target_schema']);
     const srcDbCol = findBestColumn(['source database', 'src_database', 'source_db', 'src_db']);
     const tgtDbCol = findBestColumn(['target database', 'tgt_database', 'target_db', 'tgt_db']);
+    const srcDataTypeCol = findBestColumn(['source data type', 'source datatype', 'src data type', 'src datatype', 'source_type']);
+    const tgtDataTypeCol = findBestColumn(['target data type', 'target datatype', 'tgt data type', 'tgt datatype', 'target_type']);
+    const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description']);
 
     if (!sourceCol && !targetCol) {
         return null;
@@ -236,6 +321,9 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         let sourceValue = isEnterpriseFormat ? cleanVal(row[columns[3]]) : (sourceCol ? cleanVal(row[sourceCol]) : null);
         let targetValue = isEnterpriseFormat ? cleanVal(row[columns[13]]) : (targetCol ? cleanVal(row[targetCol]) : null);
         let transformValue = isEnterpriseFormat ? cleanVal(row[columns[17]]) : (transformCol ? cleanVal(row[transformCol]) : null);
+        const sourceDataTypeValue = srcDataTypeCol ? cleanVal(row[srcDataTypeCol]) : null;
+        const targetDataTypeValue = tgtDataTypeCol ? cleanVal(row[tgtDataTypeCol]) : null;
+        const notesValue = notesCol ? cleanVal(row[notesCol]) : null;
 
         const normalizedSource = resolveCandidateColumn(sourceValue);
         const normalizedTarget = resolveCandidateColumn(targetValue);
@@ -298,6 +386,10 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
             targetTable: rowTargetTable,
             transformationType: transformType,
             transformationLogic: transformValue ? String(transformValue).trim() : undefined,
+            sourceDataType: sourceDataTypeValue ? String(sourceDataTypeValue).trim() : undefined,
+            targetDataType: targetDataTypeValue ? String(targetDataTypeValue).trim() : undefined,
+            notes: notesValue ? String(notesValue).trim() : undefined,
+            comments: notesValue ? String(notesValue).trim() : undefined,
             complexity
         });
 
