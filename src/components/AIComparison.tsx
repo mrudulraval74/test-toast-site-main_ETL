@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { FileSpreadsheet, Copy, RotateCcw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useToast } from '@/hooks/use-toast';
@@ -360,6 +360,19 @@ export default function AIComparison() {
     // Stepper State
     const [currentStep, setCurrentStep] = useState(1);
     const [selectedTestIndices, setSelectedTestIndices] = useState<number[]>([]); // For filtering to selected tests
+    const [isRunningAllTests, setIsRunningAllTests] = useState(false);
+    const [currentExecutingTestName, setCurrentExecutingTestName] = useState<string | null>(null);
+    const analysisRef = useRef<MappingAnalysis | null>(null);
+    const stopExecutionRequestedRef = useRef(false);
+    const activeExecutionCancelRef = useRef<null | (() => void)>(null);
+    const isBatchRunningRef = useRef(false);
+    const batchQueuedIndicesRef = useRef<number[]>([]);
+    const batchProcessedIndicesRef = useRef<Set<number>>(new Set());
+    const batchExcludedIndicesRef = useRef<Set<number>>(new Set());
+
+    useEffect(() => {
+        analysisRef.current = analysis;
+    }, [analysis]);
 
     // Step Access Validation
     const canAccessStep = (step: number): boolean => {
@@ -750,25 +763,51 @@ export default function AIComparison() {
 
     // --- CRUD Operations for Test Cases ---
     const handleAddTestCase = (newTestCase: TestCase) => {
-        if (!analysis) return;
-        const updatedTestCases = [...analysis.testCases, newTestCase];
-        setAnalysis({ ...analysis, testCases: updatedTestCases });
+        const newIndex = analysisRef.current?.testCases?.length ?? 0;
+        setAnalysis((prev) => {
+            if (!prev) return prev;
+            return { ...prev, testCases: [...prev.testCases, newTestCase] };
+        });
+        if (isBatchRunningRef.current) handleQueueTestDuringRun(newIndex);
         toast({ title: "Test Case Added", description: `Added '${newTestCase.name}'` });
     };
 
     const handleUpdateTestCase = (index: number, updatedTestCase: TestCase) => {
-        if (!analysis) return;
-        const updatedTestCases = [...analysis.testCases];
-        updatedTestCases[index] = updatedTestCase;
-        setAnalysis({ ...analysis, testCases: updatedTestCases });
+        setAnalysis((prev) => {
+            if (!prev) return prev;
+            if (index < 0 || index >= prev.testCases.length) return prev;
+            const updatedTestCases = [...prev.testCases];
+            updatedTestCases[index] = updatedTestCase;
+            return { ...prev, testCases: updatedTestCases };
+        });
         toast({ title: "Test Case Updated", description: `Updated '${updatedTestCase.name}'` });
     };
 
     const handleDeleteTestCase = (index: number) => {
-        if (!analysis) return;
-        const updatedTestCases = analysis.testCases.filter((_, i) => i !== index);
-        setAnalysis({ ...analysis, testCases: updatedTestCases });
+        setAnalysis((prev) => {
+            if (!prev) return prev;
+            if (index < 0 || index >= prev.testCases.length) return prev;
+            const updatedTestCases = prev.testCases.filter((_, i) => i !== index);
+            return { ...prev, testCases: updatedTestCases };
+        });
         toast({ title: "Test Case Deleted", description: "Test case removed." });
+    };
+
+    const handleDeleteSelectedTestCases = (indices: number[]) => {
+        if (!analysis || !Array.isArray(indices) || indices.length === 0) return;
+        const indexSet = new Set(
+            indices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < analysis.testCases.length)
+        );
+        if (indexSet.size === 0) return;
+        setAnalysis((prev) => {
+            if (!prev) return prev;
+            const updatedTestCases = prev.testCases.filter((_, i) => !indexSet.has(i));
+            return { ...prev, testCases: updatedTestCases };
+        });
+        toast({
+            title: "Test Cases Deleted",
+            description: `${indexSet.size} test case(s) removed.`
+        });
     };
 
     const formatExecutionErrorMessage = (error: unknown, context: 'poll' | 'execution' | 'submission'): string => {
@@ -855,8 +894,46 @@ export default function AIComparison() {
             : "Execution completed but no detailed result was returned by the agent.";
     };
 
+    const evaluateComparisonSuccess = (result: any): boolean => {
+        const summary = result?.summary || {};
+        const statusText = String(
+            summary?.comparisonStatus || summary?.status || result?.status || ''
+        ).toLowerCase();
+
+        const sourceRows = Number(summary?.sourceRowCount ?? result?.source_count ?? 0);
+        const targetRows = Number(summary?.targetRowCount ?? result?.target_count ?? 0);
+        const mismatchedRows = Number(summary?.mismatchedRows ?? 0);
+        const sourceOnlyRows = Number(summary?.sourceOnlyRows ?? 0);
+        const targetOnlyRows = Number(summary?.targetOnlyRows ?? 0);
+        const mismatches = Array.isArray(result?.mismatches)
+            ? result.mismatches
+            : Array.isArray(result?.sampleMismatches)
+                ? result.sampleMismatches
+                : [];
+
+        const hasDiff = mismatchedRows > 0 || sourceOnlyRows > 0 || targetOnlyRows > 0 || mismatches.length > 0;
+
+        if (statusText.includes('fail') || statusText.includes('error') || statusText.includes('mismatch')) {
+            return false;
+        }
+
+        if (hasDiff) {
+            return false;
+        }
+
+        if (statusText.includes('pass') || statusText.includes('success') || statusText.includes('match')) {
+            return true;
+        }
+
+        // Fallback when status text is missing: only pass if row counts align.
+        return sourceRows === targetRows;
+    };
+
     // --- Test Execution Logic (Agent-Based) ---
-    const handleRunTestCase = async (testCase: TestCase): Promise<'pass' | 'fail' | 'skipped'> => {
+    const handleRunTestCase = async (
+        testCase: TestCase,
+        context?: { sequenceLabel?: string; suppressToast?: boolean }
+    ): Promise<'pass' | 'fail' | 'skipped'> => {
         const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
 
         if (!selectedAgentId) {
@@ -880,7 +957,10 @@ export default function AIComparison() {
         };
 
         updateStatus({ status: 'running', message: 'Queued for Agent...', timestamp: new Date() });
-        toast({ title: "Job Queued", description: `Agent '${agents.find(a => a.id === selectedAgentId)?.agent_name || 'Unknown'}' requested.` });
+        setCurrentExecutingTestName(testCase.name);
+        if (!context?.suppressToast) {
+            toast({ title: "Job Queued", description: `Agent '${agents.find(a => a.id === selectedAgentId)?.agent_name || 'Unknown'}' requested.` });
+        }
 
         try {
             // 1. Submit Job to Agent
@@ -904,29 +984,66 @@ export default function AIComparison() {
             }
 
             console.log("Job submitted:", job);
-            updateStatus({ status: 'running', message: 'Agent Processing...', timestamp: new Date() });
+            updateStatus({
+                status: 'running',
+                message: context?.sequenceLabel ? `Agent Processing (${context.sequenceLabel})...` : 'Agent Processing...',
+                timestamp: new Date()
+            });
 
             const jobId = job?.jobId || job?.job_id || job?.id;
             if (!jobId) {
                 throw new Error("Failed to resolve job ID from comparison run response.");
             }
 
-            return await new Promise<'pass' | 'fail'>((resolve) => {
+            return await new Promise<'pass' | 'fail' | 'skipped'>((resolve) => {
                 let pollInterval: ReturnType<typeof setInterval> | null = null;
+                let timeoutId: ReturnType<typeof setTimeout> | null = null;
                 let resolved = false;
                 let notFoundPollErrors = 0;
+
+                const clearTracking = () => {
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                        timeoutId = null;
+                    }
+                };
+
+                const cancelActiveExecution = () => {
+                    if (resolved) return;
+                    resolved = true;
+                    clearTracking();
+                    updateStatus({
+                        status: 'fail',
+                        message: 'Execution stopped by user.',
+                        timestamp: new Date()
+                    });
+                    setCurrentExecutingTestName((prev) => (prev === testCase.name ? null : prev));
+                    if (activeExecutionCancelRef.current === cancelActiveExecution) {
+                        activeExecutionCancelRef.current = null;
+                    }
+                    resolve('skipped');
+                };
+
+                activeExecutionCancelRef.current = cancelActiveExecution;
 
                 const finalize = (status: 'pass' | 'fail', message: string, details?: any) => {
                     if (resolved) return;
                     resolved = true;
-                    if (pollInterval) clearInterval(pollInterval);
-                    clearTimeout(timeoutId);
+                    clearTracking();
                     updateStatus({
                         status,
                         message,
                         timestamp: new Date(),
                         details
                     });
+                    setCurrentExecutingTestName((prev) => (prev === testCase.name ? null : prev));
+                    if (activeExecutionCancelRef.current === cancelActiveExecution) {
+                        activeExecutionCancelRef.current = null;
+                    }
                     resolve(status);
                 };
 
@@ -955,10 +1072,21 @@ export default function AIComparison() {
                     console.log("Job Status:", jobStatus);
 
                     if (jobStatus === 'completed') {
-                        // Fetch full results (same endpoint alias) to ensure latest payload
-                        const { data: resultData } = await compareApi.results(jobId);
-                        const result = resultData?.result || resultPayload || {};
-                        const success = (result?.summary?.comparisonStatus || '').toLowerCase() !== 'failed';
+                        const hasRichPayload =
+                            !!resultPayload?.summary ||
+                            Array.isArray(resultPayload?.mismatches) ||
+                            Array.isArray(resultPayload?.sampleMismatches) ||
+                            Array.isArray(resultPayload?.source_data) ||
+                            Array.isArray(resultPayload?.target_data);
+                        let result = resultPayload || {};
+
+                        // Only fetch detailed result if status payload is incomplete.
+                        if (!hasRichPayload) {
+                            const { data: resultData } = await compareApi.results(jobId);
+                            result = resultData?.result || resultPayload || {};
+                        }
+
+                        const success = evaluateComparisonSuccess(result);
                         const message = buildActualResultMessage(result, success);
 
                         const details = {
@@ -976,8 +1104,8 @@ export default function AIComparison() {
 
                         finalize(success ? 'pass' : 'fail', message, details);
                         toast({
-                            title: success ? "Test Passed" : "Issue Detected",
-                            description: message,
+                            title: "Execution Completed",
+                            description: `${success ? 'Pass' : 'Fail'}: ${message}`,
                             variant: success ? "default" : "destructive"
                         });
                     } else if (jobStatus === 'failed' || jobStatus === 'error') {
@@ -1002,10 +1130,10 @@ export default function AIComparison() {
                         finalize('fail', errorMsg);
                         toast({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
                     }
-                }, 2000); // Poll every 2 seconds
+                }, 1000); // Poll every 1 second for faster status updates
 
                 // Timeout after 60 seconds
-                const timeoutId = setTimeout(() => {
+                timeoutId = setTimeout(() => {
                     finalize('fail', "Execution timed out while waiting for agent response. Please retry.");
                 }, 60000);
             });
@@ -1017,29 +1145,120 @@ export default function AIComparison() {
                 message: formatExecutionErrorMessage(errMsg, 'submission'),
                 timestamp: new Date()
             });
+            setCurrentExecutingTestName((prev) => (prev === testCase.name ? null : prev));
+            activeExecutionCancelRef.current = null;
             toast({ title: "Submission Failed", description: formatExecutionErrorMessage(errMsg, 'submission'), variant: "destructive" });
             return 'fail';
         }
     };
 
-    const handleRunAllTests = async () => {
+    const handleStopExecution = () => {
+        if (!isRunningAllTests) return;
+        stopExecutionRequestedRef.current = true;
+        const cancel = activeExecutionCancelRef.current;
+        if (cancel) cancel();
+        setIsRunningAllTests(false);
+        setCurrentExecutingTestName(null);
+        toast({
+            title: "Execution Stop Requested",
+            description: "Current execution will stop and remaining test cases will be skipped."
+        });
+    };
+
+    const handleQueueTestDuringRun = (index: number) => {
+        if (!isBatchRunningRef.current) return;
+        if (index < 0) return;
+        batchExcludedIndicesRef.current.delete(index);
+        if (batchProcessedIndicesRef.current.has(index)) return;
+        if (batchQueuedIndicesRef.current.includes(index)) return;
+        batchQueuedIndicesRef.current.push(index);
+    };
+
+    const handleQueueTestsDuringRun = (indices: number[]) => {
+        if (!Array.isArray(indices)) return;
+        indices.forEach((idx) => handleQueueTestDuringRun(idx));
+    };
+
+    const handleUnqueueTestsDuringRun = (indices: number[]) => {
+        if (!isBatchRunningRef.current || !Array.isArray(indices)) return;
+        indices
+            .filter((idx) => Number.isInteger(idx) && idx >= 0)
+            .forEach((idx) => batchExcludedIndicesRef.current.add(idx));
+    };
+
+    const handleRunAllTests = async (orderedIndices?: number[]) => {
         const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
         if (!analysis || !hasSource || !targetConnection) {
             toast({ title: "Cannot Run All", description: "Ensure analysis exists and connections are selected.", variant: "destructive" });
             return;
         }
 
+        if (isRunningAllTests) return;
+        stopExecutionRequestedRef.current = false;
+        setIsRunningAllTests(true);
+        isBatchRunningRef.current = true;
         toast({ title: "Batch Execution Started", description: "Running all test cases sequentially..." });
-
         let completedCount = 0;
-        for (const tc of analysis.testCases) {
-            const result = await handleRunTestCase(tc);
-            if (result !== 'skipped') completedCount += 1;
-            // Small delay to prevent overwhelming the server/browser
-            await new Promise(r => setTimeout(r, 500));
-        }
+        let interrupted = false;
+        try {
+            const initialIndices = Array.isArray(orderedIndices) && orderedIndices.length > 0
+                ? orderedIndices.filter((i) => Number.isInteger(i) && i >= 0)
+                : (analysisRef.current?.testCases || []).map((_, i) => i);
+            batchQueuedIndicesRef.current = Array.from(new Set(initialIndices));
+            batchProcessedIndicesRef.current = new Set();
+            batchExcludedIndicesRef.current = new Set();
 
-        toast({ title: "Batch Complete", description: `${completedCount} test case(s) finished. You can now save results.` });
+            let pointer = 0;
+            while (pointer < batchQueuedIndicesRef.current.length) {
+                if (stopExecutionRequestedRef.current) {
+                    interrupted = true;
+                    break;
+                }
+                const queuedIndex = batchQueuedIndicesRef.current[pointer];
+                pointer += 1;
+                if (batchProcessedIndicesRef.current.has(queuedIndex)) continue;
+                if (batchExcludedIndicesRef.current.has(queuedIndex)) continue;
+
+                const tc = analysisRef.current?.testCases?.[queuedIndex];
+                if (!tc) {
+                    batchProcessedIndicesRef.current.add(queuedIndex);
+                    continue;
+                }
+
+                batchProcessedIndicesRef.current.add(queuedIndex);
+                setCurrentExecutingTestName(tc.name);
+                const result = await handleRunTestCase(tc, {
+                    sequenceLabel: `${completedCount + 1}/${batchQueuedIndicesRef.current.length}`,
+                    suppressToast: true
+                });
+                if (stopExecutionRequestedRef.current) {
+                    interrupted = true;
+                    break;
+                }
+                if (result !== 'skipped') completedCount += 1;
+                // Small delay to prevent overwhelming the server/browser
+                if (stopExecutionRequestedRef.current) {
+                    interrupted = true;
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 100));
+            }
+        } finally {
+            activeExecutionCancelRef.current = null;
+            stopExecutionRequestedRef.current = false;
+            isBatchRunningRef.current = false;
+            batchQueuedIndicesRef.current = [];
+            batchProcessedIndicesRef.current = new Set();
+            batchExcludedIndicesRef.current = new Set();
+            setCurrentExecutingTestName(null);
+            setIsRunningAllTests(false);
+            toast({
+                title: interrupted ? "Batch Stopped" : "Execution Completed",
+                description: interrupted
+                    ? `${completedCount} test case(s) finished before stop request.`
+                    : `${completedCount} test case(s) finished. You can now save results.`
+            });
+        }
     };
 
     const handleQueryCreate = (testCase: TestCase) => {
@@ -1760,8 +1979,15 @@ export default function AIComparison() {
                                     onAddTestCase={handleAddTestCase}
                                     onUpdateTestCase={handleUpdateTestCase}
                                     onDeleteTestCase={handleDeleteTestCase}
+                                    onDeleteSelected={handleDeleteSelectedTestCases}
                                     onRunTest={handleRunTestCase}
                                     onRunAll={handleRunAllTests}
+                                    onQueueTestDuringRun={handleQueueTestDuringRun}
+                                    onQueueTestsDuringRun={handleQueueTestsDuringRun}
+                                    onUnqueueTestsDuringRun={handleUnqueueTestsDuringRun}
+                                    isRunningAll={isRunningAllTests}
+                                    currentExecutingTestName={currentExecutingTestName}
+                                    onStopExecution={handleStopExecution}
                                     onSaveSelected={handleSaveSelected}
                                     onRegenerate={(uploadedFile?.data?.length || sheets.length > 0) ? handleRegenerateTestCases : undefined}
                                     onGenerateTests={handleProceedToTests}

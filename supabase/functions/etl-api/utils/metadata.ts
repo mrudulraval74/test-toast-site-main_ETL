@@ -102,6 +102,11 @@ export async function fetchMssqlMetadata(conn: any) {
 
     const pool = await mssql.connect(config);
     try {
+        const selectedDatabase = String(conn.database || conn.initialDatabase || '').toLowerCase();
+        const includeSystemObjects = ['master', 'msdb', 'model', 'tempdb'].includes(selectedDatabase);
+        const objectTypeFilter = includeSystemObjects ? "('U', 'V', 'S')" : "('U', 'V')";
+        const shippedFilter = includeSystemObjects ? '' : 'AND o.is_ms_shipped = 0';
+
         const query = `
             SELECT 
                 s.name AS schema_name,
@@ -117,7 +122,7 @@ export async function fetchMssqlMetadata(conn: any) {
             JOIN sys.schemas s ON o.schema_id = s.schema_id
             LEFT JOIN sys.columns c ON o.object_id = c.object_id
             LEFT JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-            WHERE o.type IN ('U', 'V') AND o.is_ms_shipped = 0
+            WHERE o.type IN ${objectTypeFilter} ${shippedFilter}
             ORDER BY s.name, o.name, c.column_id
         `;
         const result = await pool.request().query(query);
@@ -129,7 +134,10 @@ export async function fetchMssqlMetadata(conn: any) {
             }
             const schema = schemasMap.get(row.schema_name);
             if (!schema.tables.has(row.table_name)) {
-                schema.tables.set(row.table_name, { name: row.table_name, columns: [] });
+                const tableType = row.table_type === 'VIEW'
+                    ? 'view'
+                    : (row.table_type === 'SYSTEM_TABLE' ? 'system_table' : 'table');
+                schema.tables.set(row.table_name, { name: row.table_name, type: tableType, columns: [] });
             }
             if (row.column_name) {
                 schema.tables.get(row.table_name).columns.push({

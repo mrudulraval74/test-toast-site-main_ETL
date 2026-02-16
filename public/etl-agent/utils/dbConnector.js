@@ -4,6 +4,16 @@ const sqlTedious = require('mssql');
 const { spawn, spawnSync } = require('child_process');
 let msnodesql = null;
 
+function normalizeDbType(type) {
+    const t = String(type || '').trim().toLowerCase();
+    if (['postgresql', 'postgres', 'pg', 'pgadmin', 'timescaledb'].includes(t)) return 'postgresql';
+    if (['mssql', 'sqlserver', 'sql_server'].includes(t)) return 'mssql';
+    if (['azuresql', 'azure_sql', 'azure-sql', 'azure-sql-db', 'azure-sql-database'].includes(t)) return 'azuresql';
+    if (['mysql'].includes(t)) return 'mysql';
+    if (['redshift'].includes(t)) return 'redshift';
+    return t;
+}
+
 function parseBooleanFlag(value) {
     if (value === undefined || value === null || value === '') return undefined;
     if (typeof value === 'boolean') return value;
@@ -104,14 +114,15 @@ function normalizeConnectionConfig(config) {
     if (!config || !config.type) return config;
 
     const normalized = { ...config };
-    const type = String(normalized.type).toLowerCase();
+    const type = normalizeDbType(normalized.type);
+    normalized.type = type;
     const connectionString = normalized.connectionString || normalized.connection_string;
 
     if (connectionString) {
         if (type === 'mssql' || type === 'azuresql') {
             Object.assign(normalized, parseSqlServerConnectionString(connectionString, type));
-        } else if (type === 'postgresql' || type === 'postgres' || type === 'redshift') {
-            const parsed = parsePostgresConnectionString(connectionString, type === 'postgres' ? 'postgresql' : type);
+        } else if (type === 'postgresql' || type === 'redshift') {
+            const parsed = parsePostgresConnectionString(connectionString, type);
             if (parsed) Object.assign(normalized, parsed);
         }
     }
@@ -234,13 +245,45 @@ function parseSqlcmdRows(stdout, delimiter) {
 }
 
 function buildWindowsAuthRemediation(extraMessage) {
-    const bits = [
-        extraMessage,
+    const lower = String(extraMessage || '').toLowerCase();
+    if (lower.includes('untrusted domain') || lower.includes('cannot be used with integrated authentication')) {
+        return `${extraMessage} Root cause: Integrated Windows Authentication is not trusted between the agent machine/user and SQL Server. Fix: use SQL Authentication (username/password), or run the agent under a domain account trusted by SQL Server/Kerberos.`;
+    }
+
+    const baseBits = [
         "Install Microsoft SQLCMD tools and ensure 'sqlcmd' is in PATH (or set MSSQL_SQLCMD_PATH).",
         "Install Microsoft ODBC Driver 17 or 18 for SQL Server.",
         "Optional fallback: switch to SQL Authentication (username/password).",
-    ].filter(Boolean);
+    ];
+    const bits = [extraMessage].filter(Boolean);
+    baseBits.forEach((bit) => {
+        if (!lower.includes(bit.toLowerCase())) bits.push(bit);
+    });
     return bits.join(' ');
+}
+
+function appendSqlServerInstanceHint(message) {
+    const text = String(message || '');
+    const lower = text.toLowerCase();
+    if (lower.includes('error locating server/instance specified') || lower.includes('server is not found or not accessible')) {
+        return `${text} Hint: Use a reachable host/IP and a static TCP port (Server=host,port), or ensure SQL Server Browser and firewall rules allow named-instance resolution.`;
+    }
+    return text;
+}
+
+function buildSqlcmdTargets(server, instanceName, parsedPort) {
+    const targets = [];
+    if (parsedPort) {
+        targets.push(`${server},${parsedPort}`);
+        targets.push(`tcp:${server},${parsedPort}`);
+    } else if (instanceName) {
+        targets.push(`${server}\\${instanceName}`);
+        targets.push(`tcp:${server}`);
+    } else {
+        targets.push(server);
+        targets.push(`tcp:${server}`);
+    }
+    return Array.from(new Set(targets.filter(Boolean)));
 }
 
 async function executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query) {
@@ -288,32 +331,29 @@ async function executeWindowsAuthQueryNative({ server, instanceName, parsedPort,
 
 async function executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query) {
     const sqlcmdPath = getSqlcmdPath();
-    const target = buildMssqlTarget(server, instanceName, parsedPort);
+    const targets = buildSqlcmdTargets(server, instanceName, parsedPort);
     const delimiter = getSqlcmdDelimiter();
-    const args = [
-        '-S', target,
-        '-d', database,
-        '-E',
-        '-b',
-        '-W',
-        // Print headers only once for reliable parsing.
-        '-h', '65535',
-        '-s', delimiter,
-        '-w', '65535',
-        '-r', '1',
-    ];
+    const runSqlcmdForTarget = (target) => new Promise((resolve, reject) => {
+        const args = [
+            '-S', target,
+            '-d', database,
+            '-E',
+            '-b',
+            '-W',
+            '-h', '65535',
+            '-s', delimiter,
+            '-w', '65535',
+            '-r', '1',
+        ];
 
-    if (ssl) {
-        args.push('-N');
-        args.push('-C');
-    }
+        if (ssl) {
+            args.push('-N');
+            args.push('-C');
+        }
 
-    args.push('-Q');
-    args.push(`SET NOCOUNT ON; ${query}`);
+        args.push('-Q');
+        args.push(`SET NOCOUNT ON; ${query}`);
 
-    console.log(`[MSSQL] Windows Auth trying sqlcmd fallback via ${sqlcmdPath}`);
-
-    return await new Promise((resolve, reject) => {
         const child = spawn(sqlcmdPath, args, {
             windowsHide: true,
         });
@@ -338,26 +378,52 @@ async function executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort,
         child.on('close', (code) => {
             if (code !== 0) {
                 const shortErr = String(stderr || stdout || 'Unknown SQLCMD error').trim();
-                return reject(new Error(buildWindowsAuthRemediation(`SQLCMD failed (exit ${code}): ${shortErr}`)));
+                return reject(new Error(`SQLCMD target "${target}" failed (exit ${code}): ${shortErr}`));
             }
             try {
                 resolve(parseSqlcmdRows(stdout, delimiter));
             } catch (parseError) {
-                reject(new Error(buildWindowsAuthRemediation(`SQLCMD output parse failed: ${parseError.message}`)));
+                reject(new Error(`SQLCMD output parse failed for target "${target}": ${parseError.message}`));
             }
         });
     });
+
+    console.log(`[MSSQL] Windows Auth trying sqlcmd fallback via ${sqlcmdPath} (targets: ${targets.join(', ')})`);
+    const targetErrors = [];
+    for (const target of targets) {
+        try {
+            return await runSqlcmdForTarget(target);
+        } catch (error) {
+            targetErrors.push(error.message || String(error));
+        }
+    }
+    const combinedErrors = appendSqlServerInstanceHint(targetErrors.join(' | '));
+    throw new Error(buildWindowsAuthRemediation(combinedErrors));
 }
 
 async function executeWindowsAuthWithFallback(connection, query) {
     const { server, instanceName, parsedPort, database, ssl } = connection;
     const mode = getWindowsAuthMode();
+    const capabilities = getWindowsAuthCapabilities();
 
     if (mode === 'sqlcmd') {
         return executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query);
     }
 
     if (mode === 'native') {
+        return executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query);
+    }
+
+    if (!capabilities.nativeAvailable && !capabilities.sqlcmdAvailable) {
+        throw new Error(buildWindowsAuthRemediation('Windows Authentication unavailable: neither msnodesqlv8 nor sqlcmd is installed.'));
+    }
+
+    if (!capabilities.nativeAvailable && capabilities.sqlcmdAvailable) {
+        console.warn('[MSSQL] Native Windows Auth unavailable (msnodesqlv8 missing). Using sqlcmd fallback directly.');
+        return executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query);
+    }
+
+    if (capabilities.nativeAvailable && !capabilities.sqlcmdAvailable) {
         return executeWindowsAuthQueryNative({ server, instanceName, parsedPort, database, ssl }, query);
     }
 
@@ -368,7 +434,7 @@ async function executeWindowsAuthWithFallback(connection, query) {
         try {
             return await executeWindowsAuthQuerySqlcmd({ server, instanceName, parsedPort, database, ssl }, query);
         } catch (sqlcmdError) {
-            throw new Error(buildWindowsAuthRemediation(`Windows Authentication failed on both native and SQLCMD paths. Native error: ${nativeError.message}. SQLCMD error: ${sqlcmdError.message}`));
+            throw new Error(`Windows Authentication failed on both native and SQLCMD paths. Native error: ${nativeError.message}. SQLCMD error: ${sqlcmdError.message}`);
         }
     }
 }
@@ -376,7 +442,7 @@ async function executeWindowsAuthWithFallback(connection, query) {
 // Execute query based on database type
 async function executeQuery(config, query) {
     config = normalizeConnectionConfig(config);
-    if (config.type === 'postgresql' || config.type === 'postgres' || config.type === 'redshift') {
+    if (config.type === 'postgresql' || config.type === 'redshift') {
         return await executePostgreSQLQuery(config, query);
     } else if (config.type === 'mysql') {
         return await executeMySQLQuery(config, query);
@@ -389,31 +455,51 @@ async function executeQuery(config, query) {
 
 // PostgreSQL query execution
 async function executePostgreSQLQuery(config, query) {
-    const client = new PgClient({
+    const baseConfig = {
         host: config.host,
         port: config.port,
         database: config.database,
         user: config.username,
         password: config.password,
-        ssl: config.ssl ? { rejectUnauthorized: false } : false,
-    });
+    };
 
-    try {
-        await client.connect();
-        const result = await client.query(query);
-        await client.end();
-
-        return {
-            rows: result.rows,
-            rowCount: result.rowCount,
-            fields: result.fields ? result.fields.map((f) => f.name) : [],
-        };
-    } catch (error) {
-        if (client) {
-            try { await client.end(); } catch (e) { /* ignore */ }
-        }
-        throw error;
+    const sslAttempts = [];
+    if (config.ssl === true) sslAttempts.push({ rejectUnauthorized: false });
+    if (config.ssl === false) sslAttempts.push(false);
+    if (config.ssl === undefined || config.ssl === null) {
+        // Cross-version compatibility: some servers require SSL, others reject it.
+        sslAttempts.push(false);
+        sslAttempts.push({ rejectUnauthorized: false });
     }
+
+    let lastError = null;
+    for (const sslOption of sslAttempts) {
+        const client = new PgClient({
+            ...baseConfig,
+            ssl: sslOption,
+            statement_timeout: Math.max((Number(config.connectTimeout) || 5000), 5000),
+            query_timeout: Math.max((Number(config.connectTimeout) || 5000), 5000),
+        });
+        try {
+            await client.connect();
+            const result = await client.query(query);
+            await client.end();
+            return {
+                rows: result.rows,
+                rowCount: result.rowCount,
+                fields: result.fields ? result.fields.map((f) => f.name) : [],
+            };
+        } catch (error) {
+            lastError = error;
+            try { await client.end(); } catch (e) { /* ignore */ }
+            const msg = String(error?.message || '').toLowerCase();
+            const sslRelated = msg.includes('ssl') || msg.includes('tls') || msg.includes('self signed');
+            if (!sslRelated) {
+                throw error;
+            }
+        }
+    }
+    throw lastError || new Error('PostgreSQL connection failed');
 }
 
 // MySQL query execution
@@ -481,7 +567,7 @@ async function executeMSSQLQuery(config, query) {
         server,
         database: config.database,
         options: {
-            encrypt: config.ssl || false,
+            encrypt: isAzureSql ? true : (config.ssl === true),
             trustServerCertificate: true,
             instanceName,
         },
@@ -513,30 +599,58 @@ async function executeMSSQLQuery(config, query) {
     console.log('[MSSQL] Auth mode: SQL');
     console.log(`[MSSQL] Connecting to ${server}${instanceName ? '\\' + instanceName : ''}${mssqlConfig.port ? ':' + mssqlConfig.port : ''}, DB: ${config.database}`);
 
-    let pool;
-    try {
-        // Force SQL-auth path to use the default tedious driver.
-        pool = new sqlTedious.ConnectionPool(mssqlConfig);
-        await pool.connect();
-        const result = await pool.request().query(query);
-        await pool.close();
-
-        return {
-            rows: result.recordset || [],
-            rowCount: result.recordset ? result.recordset.length : 0,
-            fields: result.recordset && result.recordset.columns ? Object.keys(result.recordset.columns) : [],
-        };
-    } catch (error) {
-        console.error('[MSSQL] Connection/Query Error:', {
-            message: error.message,
-            code: error.code,
-            originalError: error,
-        });
-        if (pool) {
-            try { await pool.close(); } catch (e) { /* ignore */ }
-        }
-        throw error;
+    // Compatibility fallback for mixed SQL Server versions/encryption policies.
+    const encryptAttempts = [];
+    if (isAzureSql) {
+        encryptAttempts.push(true);
+    } else if (config.ssl === true) {
+        encryptAttempts.push(true);
+    } else if (config.ssl === false) {
+        encryptAttempts.push(false);
+    } else {
+        encryptAttempts.push(false);
+        encryptAttempts.push(true);
     }
+
+    let lastError = null;
+    for (const encryptMode of encryptAttempts) {
+        let pool;
+        try {
+            const attemptCfg = {
+                ...mssqlConfig,
+                options: {
+                    ...mssqlConfig.options,
+                    encrypt: encryptMode,
+                },
+            };
+            pool = new sqlTedious.ConnectionPool(attemptCfg);
+            await pool.connect();
+            const result = await pool.request().query(query);
+            await pool.close();
+            return {
+                rows: result.recordset || [],
+                rowCount: result.recordset ? result.recordset.length : 0,
+                fields: result.recordset && result.recordset.columns ? Object.keys(result.recordset.columns) : [],
+            };
+        } catch (error) {
+            lastError = error;
+            console.error('[MSSQL] Connection/Query Error:', {
+                message: error.message,
+                code: error.code,
+                encrypt: encryptMode,
+            });
+            if (pool) {
+                try { await pool.close(); } catch (e) { /* ignore */ }
+            }
+
+            const msg = String(error?.message || '').toLowerCase();
+            const tlsRelated = msg.includes('tls') || msg.includes('certificate') || msg.includes('encrypt');
+            if (!tlsRelated) {
+                throw error;
+            }
+        }
+    }
+    throw lastError || new Error('MSSQL connection failed');
 }
 
 async function fetchPostgreSQLMetadata(config) {
@@ -627,13 +741,18 @@ async function testConnection(config) {
 // Fetch metadata for supported databases
 async function fetchMetadata(config) {
     config = normalizeConnectionConfig(config);
-    if (config.type === 'postgresql' || config.type === 'postgres' || config.type === 'redshift') {
+    if (config.type === 'postgresql' || config.type === 'redshift') {
         return await fetchPostgreSQLMetadata(config);
     }
 
     if (config.type !== 'mssql' && config.type !== 'azuresql') {
         throw new Error(`Metadata fetch is currently supported for SQL Server and PostgreSQL. Received: ${config.type}`);
     }
+
+    const selectedDatabase = String(config.database || '').toLowerCase();
+    const includeSystemObjects = ['master', 'msdb', 'model', 'tempdb'].includes(selectedDatabase);
+    const objectTypeFilter = includeSystemObjects ? "('U', 'V', 'S')" : "('U', 'V')";
+    const shippedFilter = includeSystemObjects ? '' : 'AND o.is_ms_shipped = 0';
 
     const query = `
         SELECT
@@ -655,7 +774,7 @@ async function fetchMetadata(config) {
         JOIN sys.schemas s ON o.schema_id = s.schema_id
         LEFT JOIN sys.columns c ON o.object_id = c.object_id
         LEFT JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-        WHERE o.type IN ('U', 'V') AND o.is_ms_shipped = 0
+        WHERE o.type IN ${objectTypeFilter} ${shippedFilter}
         ORDER BY s.name, o.name, c.column_id
     `;
 

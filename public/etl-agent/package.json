@@ -7,7 +7,8 @@
         "start": "node agent.js",
         "dev": "nodemon agent.js",
         "install:windows-auth": "npm install msnodesqlv8 --save-optional",
-        "postinstall": "node -e \"if(process.platform==='win32'){try{require.resolve('msnodesqlv8');console.log('msnodesqlv8 is ready for Windows Authentication.');}catch(e){console.warn('Windows Authentication dependency not installed. Run: npm run install:windows-auth');}}\""
+        "install:python-odbc": "node -e \"const{spawnSync}=require('child_process');const run=(c,a)=>spawnSync(c,a,{encoding:'utf8',stdio:'pipe',windowsHide:true});const cands=[['py',['-3']],['python',[]],['python3',[]]];let chosen=null;for(const [c,p] of cands){const r=run(c,[...p,'--version']);if(r.status===0){chosen=[c,p];break;}}if(!chosen){console.error('[pyodbc] Python 3 not found.');process.exit(1);}const [cmd,prefix]=chosen;const i=run(cmd,[...prefix,'-m','pip','install','--disable-pip-version-check','pyodbc']);if(i.status!==0){console.error('[pyodbc] pip install pyodbc failed.');console.error((i.stdout||'')+(i.stderr||''));process.exit(1);}const v=run(cmd,[...prefix,'-c','import pyodbc; print(pyodbc.version)']);if(v.status!==0){console.error('[pyodbc] verification failed.');console.error((v.stdout||'')+(v.stderr||''));process.exit(1);}console.log('[pyodbc] Installed and verified '+(v.stdout||'').trim());\"",
+        "postinstall": "npm run install:python-odbc && node -e \"if(process.platform==='win32'){try{require.resolve('msnodesqlv8');console.log('msnodesqlv8 is ready for Windows Authentication.');}catch(e){console.warn('Windows Authentication dependency not installed. Run: npm run install:windows-auth');}}\""
     },
     "keywords": [
         "etl",

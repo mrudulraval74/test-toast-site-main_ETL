@@ -361,15 +361,24 @@ export const AgentManagement = ({ projectId }: AgentManagementProps) => {
   const downloadAgentPackage = async (agentType: "selenium" | "playwright" | "performance" | "etl", agentToken?: string) => {
     const zip = new JSZip();
     const token = agentToken || newAgentToken || "YOUR_API_TOKEN_HERE";
+    const baseUrl = import.meta.env.BASE_URL || "/";
+    const assetUrl = (path: string) => `${baseUrl}${path.replace(/^\//, "")}`;
+    const fetchTextOrThrow = async (path: string) => {
+      const response = await fetch(assetUrl(path));
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${path} (HTTP ${response.status})`);
+      }
+      return response.text();
+    };
 
     try {
       if (agentType === "playwright") {
         // Download Playwright agent package
         const [agentJsResponse, packageJsonResponse, readmeResponse, dockerfileResponse] = await Promise.all([
-          fetch('/agent-package/agent.js'),
-          fetch('/agent-package/package.json'),
-          fetch('/agent-package/README.md'),
-          fetch('/agent-package/Dockerfile'),
+          fetch(assetUrl('/agent-package/agent.js')),
+          fetch(assetUrl('/agent-package/package.json')),
+          fetch(assetUrl('/agent-package/README.md')),
+          fetch(assetUrl('/agent-package/Dockerfile')),
         ]);
 
         if (!agentJsResponse.ok || !packageJsonResponse.ok || !readmeResponse.ok || !dockerfileResponse.ok) {
@@ -404,10 +413,10 @@ export const AgentManagement = ({ projectId }: AgentManagementProps) => {
       } else if (agentType === 'performance') {
         // Download Performance agent package
         const [agentJsResponse, packageJsonResponse, readmeResponse, dockerfileResponse] = await Promise.all([
-          fetch('/lovable-performance-agent/run-agent.js'),
-          fetch('/lovable-performance-agent/package.json'),
-          fetch('/lovable-performance-agent/README.md'),
-          fetch('/lovable-performance-agent/Dockerfile'),
+          fetch(assetUrl('/lovable-performance-agent/run-agent.js')),
+          fetch(assetUrl('/lovable-performance-agent/package.json')),
+          fetch(assetUrl('/lovable-performance-agent/README.md')),
+          fetch(assetUrl('/lovable-performance-agent/Dockerfile')),
         ]);
 
         if (!agentJsResponse.ok || !packageJsonResponse.ok || !readmeResponse.ok || !dockerfileResponse.ok) {
@@ -441,23 +450,13 @@ export const AgentManagement = ({ projectId }: AgentManagementProps) => {
         URL.revokeObjectURL(url);
       } else if (agentType === 'etl') {
         // Download ETL agent package
-        const [agentJsResponse, packageJsonResponse, readmeResponse, dbConnectorResponse, compareEngineResponse] = await Promise.all([
-          fetch('/etl-agent/agent.js'),
-          fetch('/etl-agent/package.json'),
-          fetch('/etl-agent/README.md'),
-          fetch('/etl-agent/utils/dbConnector.js'),
-          fetch('/etl-agent/utils/compareEngine.js'),
+        const [agentJs, packageJson, readme, dbConnector, compareEngine] = await Promise.all([
+          fetchTextOrThrow('/etl-agent/agent.js'),
+          fetchTextOrThrow('/etl-agent/package.json'),
+          fetchTextOrThrow('/etl-agent/README.md'),
+          fetchTextOrThrow('/etl-agent/utils/dbConnector.js'),
+          fetchTextOrThrow('/etl-agent/utils/compareEngine.js'),
         ]);
-
-        if (!agentJsResponse.ok || !packageJsonResponse.ok || !readmeResponse.ok || !dbConnectorResponse.ok || !compareEngineResponse.ok) {
-          throw new Error('Failed to fetch ETL agent package files');
-        }
-
-        const agentJs = await agentJsResponse.text();
-        const packageJson = await packageJsonResponse.text();
-        const readme = await readmeResponse.text();
-        const dbConnector = await dbConnectorResponse.text();
-        const compareEngine = await compareEngineResponse.text();
 
         // Create .env file with agent token
         const envContent = `# ETL Agent Configuration
@@ -495,11 +494,11 @@ PROJECT_ID=${projectId}
       } else {
         // Download Selenium agent package
         const [agentJavaResponse, pomResponse, readmeResponse, runShResponse, runBatResponse] = await Promise.all([
-          fetch('/selenium-agent/src/main/java/com/wispr/agent/SeleniumAgent.java'),
-          fetch('/selenium-agent/pom.xml'),
-          fetch('/selenium-agent/README.md'),
-          fetch('/selenium-agent/run-agent.sh'),
-          fetch('/selenium-agent/run-agent.bat'),
+          fetch(assetUrl('/selenium-agent/src/main/java/com/wispr/agent/SeleniumAgent.java')),
+          fetch(assetUrl('/selenium-agent/pom.xml')),
+          fetch(assetUrl('/selenium-agent/README.md')),
+          fetch(assetUrl('/selenium-agent/run-agent.sh')),
+          fetch(assetUrl('/selenium-agent/run-agent.bat')),
         ]);
 
         if (!agentJavaResponse.ok || !pomResponse.ok || !readmeResponse.ok || !runShResponse.ok || !runBatResponse.ok) {
@@ -549,11 +548,11 @@ PROJECT_ID=${projectId}
         title: "Download Started",
         description: agentMessages[agentType] || "Agent package downloaded. Follow the README to set up.",
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error downloading agent package:', error);
       toast({
         title: "Download Failed",
-        description: "Failed to download agent package. Please try again.",
+        description: error?.message || "Failed to download agent package. Please try again.",
         variant: "destructive",
       });
     }

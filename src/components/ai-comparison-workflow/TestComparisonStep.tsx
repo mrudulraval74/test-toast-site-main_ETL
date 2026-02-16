@@ -76,8 +76,15 @@ interface TestComparisonStepProps {
     onAddTestCase?: (testCase: TestCase) => void;
     onUpdateTestCase?: (index: number, testCase: TestCase) => void;
     onDeleteTestCase?: (index: number) => void;
+    onDeleteSelected?: (indices: number[]) => void;
     onRunTest?: (testCase: TestCase) => void;
-    onRunAll?: () => void;
+    onRunAll?: (orderedIndices?: number[]) => void;
+    onQueueTestDuringRun?: (index: number) => void;
+    onQueueTestsDuringRun?: (indices: number[]) => void;
+    onUnqueueTestsDuringRun?: (indices: number[]) => void;
+    isRunningAll?: boolean;
+    currentExecutingTestName?: string | null;
+    onStopExecution?: () => void;
     onSaveSelected?: (selectedIndices: number[]) => void; // New callback for saving selected tests
     onRegenerate?: () => void;
     onGenerateTests?: () => void; // New: Generate test cases from validated columns
@@ -92,8 +99,15 @@ export function TestComparisonStep({
     onAddTestCase,
     onUpdateTestCase,
     onDeleteTestCase,
+    onDeleteSelected,
     onRunTest,
     onRunAll,
+    onQueueTestDuringRun,
+    onQueueTestsDuringRun,
+    onUnqueueTestsDuringRun,
+    isRunningAll = false,
+    currentExecutingTestName = null,
+    onStopExecution,
     onSaveSelected,
     onRegenerate,
     onGenerateTests
@@ -183,6 +197,16 @@ export function TestComparisonStep({
     );
 
     const totalPages = Math.max(1, Math.ceil(filteredTestCases.length / itemsPerPage));
+    const filteredIndices = useMemo(
+        () => filteredTestCases.map(({ index }) => index),
+        [filteredTestCases]
+    );
+    const selectedFilteredCount = useMemo(
+        () => filteredIndices.filter((idx) => selectedTests.includes(idx)).length,
+        [filteredIndices, selectedTests]
+    );
+    const allFilteredSelected = filteredIndices.length > 0 && selectedFilteredCount === filteredIndices.length;
+
     const paginatedTestCases = useMemo(() => {
         const startIndex = (currentPage - 1) * itemsPerPage;
         return filteredTestCases.slice(startIndex, startIndex + itemsPerPage);
@@ -195,6 +219,27 @@ export function TestComparisonStep({
     useEffect(() => {
         setExpandedTests((prev) => prev.filter((idx) => idx < testCases.length));
     }, [testCases.length]);
+
+    useEffect(() => {
+        if (!currentExecutingTestName) return;
+
+        const filteredIndex = filteredTestCases.findIndex(({ tc }) => tc.name === currentExecutingTestName);
+        if (filteredIndex === -1) return;
+
+        const targetPage = Math.floor(filteredIndex / itemsPerPage) + 1;
+        if (targetPage !== currentPage) {
+            setCurrentPage(targetPage);
+        }
+
+        const realIndex = filteredTestCases[filteredIndex]?.index;
+        if (typeof realIndex === 'number') {
+            setExpandedTests((prev) => (prev.includes(realIndex) ? prev : [...prev, realIndex]));
+            window.setTimeout(() => {
+                const el = document.getElementById(`test-case-card-${realIndex}`);
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 120);
+        }
+    }, [currentExecutingTestName, filteredTestCases, itemsPerPage, currentPage]);
 
     const toggleExpanded = (index: number) => {
         setExpandedTests((prev) =>
@@ -284,6 +329,11 @@ export function TestComparisonStep({
                         {testCases.length} generated test cases for {uploadedFile?.name || 'Unknown File'}
                         {selectedTests.length > 0 && <span className="text-primary font-semibold"> | {selectedTests.length} selected</span>}
                     </p>
+                    {isRunningAll && (
+                        <p className="mt-1 text-xs font-medium text-blue-700">
+                            Currently executing: {currentExecutingTestName || 'Preparing...'}
+                        </p>
+                    )}
                 </div>
                 <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
                     <div className="relative w-full md:max-w-sm">
@@ -295,62 +345,132 @@ export function TestComparisonStep({
                             onChange={(e) => setSearchTerm(e.target.value)}
                         />
                     </div>
-                    <div className="flex w-full flex-wrap gap-2 md:w-auto">
-                    {selectedTests.length > 0 && onSaveSelected && (
+                    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
+                    <Button
+                        variant="outline"
+                        className="h-9 gap-2"
+                        disabled={filteredIndices.length === 0}
+                        onClick={() => {
+                            if (allFilteredSelected) {
+                                const filteredSet = new Set(filteredIndices);
+                                if (isRunningAll && onUnqueueTestsDuringRun) {
+                                    const toUnqueue = selectedTests.filter((idx) => filteredSet.has(idx));
+                                    if (toUnqueue.length > 0) onUnqueueTestsDuringRun(toUnqueue);
+                                }
+                                setSelectedTests((prev) => prev.filter((idx) => !filteredSet.has(idx)));
+                                return;
+                            }
+                            if (isRunningAll && onQueueTestsDuringRun) {
+                                const selectedSet = new Set(selectedTests);
+                                const toQueue = filteredIndices.filter((idx) => !selectedSet.has(idx));
+                                if (toQueue.length > 0) onQueueTestsDuringRun(toQueue);
+                            }
+                            setSelectedTests((prev) => Array.from(new Set([...prev, ...filteredIndices])));
+                        }}
+                    >
+                        <CheckCircle className="h-4 w-4" />
+                        {allFilteredSelected ? 'Unselect All' : 'Select All'}
+                    </Button>
+                    {!isRunningAll && selectedTests.length > 0 && (
                         <Button
+                            variant="ghost"
+                            className="h-9 px-2 text-xs"
                             onClick={() => {
-                                onSaveSelected(selectedTests);
-                            }}
-                            variant="default"
-                            className="h-9 gap-2 bg-primary"
-                        >
-                            <CheckCircle className="h-4 w-4" />
-                            Save Selected ({selectedTests.length})
-                        </Button>
-                    )}
-                    {selectedTests.length > 0 && onDeleteTestCase && (
-                        <Button
-                            onClick={() => {
-                                // Delete in reverse order to maintain indices
-                                [...selectedTests].sort((a, b) => b - a).forEach(idx => {
-                                    onDeleteTestCase(idx);
-                                });
+                                if (isRunningAll && onUnqueueTestsDuringRun && selectedTests.length > 0) {
+                                    onUnqueueTestsDuringRun(selectedTests);
+                                }
                                 setSelectedTests([]);
                             }}
-                            variant="destructive"
-                            className="h-9 gap-2"
                         >
-                            <Trash2 className="h-4 w-4" />
-                            Delete ({selectedTests.length})
+                            Clear Selection
                         </Button>
                     )}
-                    {onRunAll && (
+                    {!isRunningAll && selectedTests.length > 0 && (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button className="h-9 gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm">
+                                    <Settings className="h-4 w-4" />
+                                    Bulk Actions ({selectedTests.length})
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                                {onRunAll && (
+                                    <DropdownMenuItem onClick={() => {
+                                        const selectedSet = new Set(selectedTests);
+                                        const orderedSelectedIndices = filteredTestCases
+                                            .map(({ index }) => index)
+                                            .filter((idx) => selectedSet.has(idx));
+                                        onRunAll(orderedSelectedIndices);
+                                    }}>
+                                        <Play className="mr-2 h-4 w-4" />
+                                        Run Selected
+                                    </DropdownMenuItem>
+                                )}
+                                {onSaveSelected && (
+                                    <DropdownMenuItem onClick={() => onSaveSelected(selectedTests)}>
+                                        <CheckCircle className="mr-2 h-4 w-4" />
+                                        Save Selected
+                                    </DropdownMenuItem>
+                                )}
+                                {(onDeleteSelected || onDeleteTestCase) && (
+                                    <DropdownMenuItem
+                                        className="text-red-600 focus:text-red-700"
+                                        onClick={() => {
+                                            if (onDeleteSelected) {
+                                                onDeleteSelected(selectedTests);
+                                            } else if (onDeleteTestCase) {
+                                                [...selectedTests].sort((a, b) => b - a).forEach(idx => {
+                                                    onDeleteTestCase(idx);
+                                                });
+                                            }
+                                            setSelectedTests([]);
+                                        }}
+                                    >
+                                        <Trash2 className="mr-2 h-4 w-4" />
+                                        Delete Selected
+                                    </DropdownMenuItem>
+                                )}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
+                    {!isRunningAll && onRunAll && (
                         <Button
-                            onClick={onRunAll}
+                            onClick={() => onRunAll(filteredTestCases.map(({ index }) => index))}
                             className="h-9 gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+                            disabled={isRunningAll}
                         >
                             <Play className="h-4 w-4" />
                             Run All
+                        </Button>
+                    )}
+                    {isRunningAll && onStopExecution && (
+                        <Button
+                            onClick={onStopExecution}
+                            variant="destructive"
+                            className="h-9 gap-2"
+                        >
+                            <XCircle className="h-4 w-4" />
+                            Stop Execution
                         </Button>
                     )}
                     <Button onClick={() => { resetForm(); setIsAddDialogOpen(true); }} variant="secondary" className="h-9 gap-2">
                         <Plus className="h-4 w-4" />
                         Add Case
                     </Button>
-                    <div className="mx-1 hidden h-9 w-px bg-border md:block" />
-                    {onCopy && (
+                    {!isRunningAll && <div className="mx-1 hidden h-9 w-px bg-border md:block" />}
+                    {!isRunningAll && onCopy && (
                         <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onCopy} title="Copy All SQL">
                             <Copy className="h-4 w-4" />
                         </Button>
                     )}
-                    {onRegenerate && (
+                    {!isRunningAll && onRegenerate && (
                         <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onRegenerate} title="Regenerate Test Cases">
                             <div className="h-4 w-4 rotate-0 hover:rotate-180 transition-transform duration-500">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-refresh-cw"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg>
                             </div>
                         </Button>
                     )}
-                    {onExportResults && (
+                    {!isRunningAll && onExportResults && (
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <Button variant="ghost" size="icon" className="h-9 w-9" title="Export Options">
@@ -379,7 +499,7 @@ export function TestComparisonStep({
             {/* Test Case List */}
             <div className="grid grid-cols-1 gap-3">
                 {paginatedTestCases?.map(({ tc, index: realIndex }) => (
-                    <Card key={`${tc.name}-${realIndex}`} className="group border-border/80 transition-shadow hover:shadow-sm">
+                    <Card id={`test-case-card-${realIndex}`} key={`${tc.name}-${realIndex}`} className="group border-border/80 transition-shadow hover:shadow-sm">
                         <CardHeader className="flex flex-row items-start justify-between space-y-0 border-b bg-muted/5 px-3 py-2.5">
                             <div className="flex items-start gap-3 flex-1">
                                 <Checkbox
@@ -387,8 +507,14 @@ export function TestComparisonStep({
                                     onCheckedChange={(checked) => {
                                         if (checked) {
                                             setSelectedTests([...selectedTests, realIndex]);
+                                            if (isRunningAll && onQueueTestDuringRun) {
+                                                onQueueTestDuringRun(realIndex);
+                                            }
                                         } else {
                                             setSelectedTests(selectedTests.filter(i => i !== realIndex));
+                                            if (isRunningAll && onUnqueueTestsDuringRun) {
+                                                onUnqueueTestsDuringRun([realIndex]);
+                                            }
                                         }
                                     }}
                                     className={`mt-0.5 transition-opacity ${selectedTests.length > 0 || selectedTests.includes(realIndex) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
@@ -436,6 +562,7 @@ export function TestComparisonStep({
                                         className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-50"
                                         onClick={() => onRunTest(tc)}
                                         title="Run Test"
+                                        disabled={isRunningAll}
                                     >
                                         <Play className="h-4 w-4" />
                                     </Button>

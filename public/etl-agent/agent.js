@@ -32,6 +32,13 @@ if (!windowsAuthCapabilities.nativeAvailable && !windowsAuthCapabilities.sqlcmdA
 // Agent state
 let isProcessing = false;
 
+function formatConnectionLabel(connection) {
+    const host = connection?.host || 'unknown-host';
+    const port = connection?.port ? `:${connection.port}` : '';
+    const database = connection?.database || 'unknown-db';
+    return `${connection?.type || 'db'}://${host}${port}/${database}`;
+}
+
 // Send heartbeat to server
 async function sendHeartbeat() {
     try {
@@ -149,8 +156,8 @@ async function executeETLComparison(payload) {
     const { sourceConnection, targetConnection, sourceQuery, targetQuery, keyColumns } = payload;
 
     console.log('[Comparison] Executing ETL comparison...');
-    console.log(`[Comparison] Source: ${sourceConnection.type}://${sourceConnection.host}:${sourceConnection.port}/${sourceConnection.database}`);
-    console.log(`[Comparison] Target: ${targetConnection.type}://${targetConnection.host}:${targetConnection.port}/${targetConnection.database}`);
+    console.log(`[Comparison] Source: ${formatConnectionLabel(sourceConnection)}`);
+    console.log(`[Comparison] Target: ${formatConnectionLabel(targetConnection)}`);
 
     const result = await executeComparison({
         sourceConnection,
@@ -171,7 +178,7 @@ async function executeETLComparison(payload) {
 async function executeTestConnection(payload) {
     const { connection } = payload;
 
-    console.log(`[Test] Testing connection to ${connection.type}://${connection.host}:${connection.port}/${connection.database}`);
+    console.log(`[Test] Testing connection to ${formatConnectionLabel(connection)}`);
     if (connection.type === 'mssql' || connection.type === 'azuresql') {
         console.log('[Test] SQL Server auth payload:', {
             type: connection.type,
@@ -201,7 +208,7 @@ async function executeTestConnection(payload) {
 async function executeFetchMetadata(payload) {
     const { connection } = payload;
 
-    console.log(`[Metadata] Fetching metadata for ${connection.type}://${connection.host}:${connection.port || ''}/${connection.database}`);
+    console.log(`[Metadata] Fetching metadata for ${formatConnectionLabel(connection)}`);
     const result = await fetchMetadata(connection);
     console.log(`[Metadata] Fetched ${result.databases?.length || 0} database(s)`);
     return result;
