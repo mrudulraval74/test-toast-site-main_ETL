@@ -132,6 +132,44 @@ function hasKeyword(value: any, keywords: string[]): boolean {
     return keywords.some((kw) => text.includes(kw.toUpperCase()));
 }
 
+function inferBestTableFromSchema(
+    schema: DatabaseSchema | null | undefined,
+    mappings: any[],
+    side: 'source' | 'target'
+): string | null {
+    if (!schema || !Array.isArray(schema.tables) || schema.tables.length === 0 || !Array.isArray(mappings)) {
+        return null;
+    }
+
+    const columnKey = side === 'source' ? 'sourceColumn' : 'targetColumn';
+    const scores = new Map<string, number>();
+
+    for (const table of schema.tables) {
+        let score = 0;
+        for (const mapping of mappings) {
+            const colName = normalizeIdentifier(mapping?.[columnKey]);
+            if (!colName) continue;
+            if (findColumnInTable(table, colName)) score += 1;
+        }
+        if (score > 0) {
+            scores.set(table.fullName, score);
+        }
+    }
+
+    if (scores.size === 0) return null;
+
+    let bestTable: string | null = null;
+    let bestScore = -1;
+    for (const [tableName, score] of scores.entries()) {
+        if (score > bestScore) {
+            bestTable = tableName;
+            bestScore = score;
+        }
+    }
+
+    return bestTable;
+}
+
 export function generateMappingSpecificTests(
     mappingData: any[],
     sourceSchema?: DatabaseSchema | null,
@@ -153,8 +191,10 @@ export function generateMappingSpecificTests(
     const testCases: TestCase[] = [];
 
     // Default tables if not specified in mapping
-    const defaultSourceTable = Array.from(parsed.sourceTables)[0] || 'SourceTable';
-    const defaultTargetTable = Array.from(parsed.targetTables)[0] || 'TargetTable';
+    const inferredSourceTable = inferBestTableFromSchema(sourceSchema, parsed.columnMappings, 'source');
+    const inferredTargetTable = inferBestTableFromSchema(targetSchema, parsed.columnMappings, 'target');
+    const defaultSourceTable = Array.from(parsed.sourceTables)[0] || inferredSourceTable || 'SourceTable';
+    const defaultTargetTable = Array.from(parsed.targetTables)[0] || inferredTargetTable || 'TargetTable';
 
     /**
      * Validate that a column exists in the schema

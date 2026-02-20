@@ -1112,6 +1112,17 @@ export default function AIComparison() {
             return 'skipped';
         }
 
+        const hasUnresolvedTableName = (sql: string): boolean => {
+            if (!sql) return false;
+            return /\bSourceTable\b/i.test(sql) || /\bTargetTable\b/i.test(sql);
+        };
+
+        if (hasUnresolvedTableName(testCase.sourceSQL) || hasUnresolvedTableName(testCase.targetSQL)) {
+            const message = "Detected unresolved table placeholder (SourceTable/TargetTable). Regenerate tests after validating mapping sheet table names.";
+            toast({ title: "Invalid Test SQL", description: message, variant: "destructive" });
+            return 'skipped';
+        }
+
         const updateStatus = (status: TestCase['lastRunResult']) => {
             setAnalysis(prev => {
                 if (!prev) return prev;
