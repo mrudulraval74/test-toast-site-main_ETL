@@ -77,6 +77,8 @@ interface MappingAnalysis {
     testCases: TestCase[];
 }
 
+type MappingSheetMode = 'qa_standard' | 'convert_to_qa_standard';
+
 const normalizeSavedRuns = (rawData: any): any[] => {
     const reports = Array.isArray(rawData)
         ? rawData
@@ -248,6 +250,7 @@ export default function AIComparison() {
     const [uploadedFile, setUploadedFile] = useState<{ name: string; data: any[] } | null>(null);
     const [sheets, setSheets] = useState<{ name: string; data: any[] }[]>([]);
     const [selectedSheetNames, setSelectedSheetNames] = useState<string[]>([]);
+    const [mappingSheetMode, setMappingSheetMode] = useState<MappingSheetMode>('qa_standard');
     const [analysis, setAnalysis] = useState<MappingAnalysis | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -505,6 +508,27 @@ export default function AIComparison() {
         reader.readAsBinaryString(file);
     };
 
+    const replaceWorkbook = (nextFileName: string, nextSheets: { name: string; data: any[] }[]) => {
+        setSheets(nextSheets);
+        setAnalysis(null);
+        setValidationResults(null);
+        setAnalysisError(null);
+        setSelectedTestIndices([]);
+
+        if (nextSheets.length > 0) {
+            setUploadedFile({ name: nextFileName, data: nextSheets[0].data });
+            setSelectedSheetNames(nextSheets.length > 1 ? nextSheets.map((s) => s.name) : [nextSheets[0].name]);
+        } else {
+            setUploadedFile(null);
+            setSelectedSheetNames([]);
+        }
+
+        toast({
+            title: "Workbook Loaded",
+            description: `Loaded ${nextSheets.length} sheet${nextSheets.length === 1 ? "" : "s"}.`
+        });
+    };
+
     const handleSheetsSelectionChange = (names: string[]) => {
         setSelectedSheetNames(names);
         // Do not auto-analyze. User must click "Analyze Selected"
@@ -532,39 +556,15 @@ export default function AIComparison() {
         try {
             console.log(`Analyzing ${sheetsToAnalyze.length} sheets...`);
 
-            // Fetch schemas once (Multiple Sources)
-            let sourceSchemas: any[] = [];
-            let targetSchema: any = null;
-
-            if (multiSourceMode) {
-                for (const conn of sourceConnections) {
-                    if (conn?.id) {
-                        try {
-                            const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                            const schema = await fetchDatabaseSchema(conn.id, selectedAgentId || undefined);
-                            if (schema) sourceSchemas.push(schema);
-                        } catch (e) { console.warn(`Source schema fetch failed for ${conn.name}`, e); }
-                    }
-                }
-            } else if (sourceConnections[0]?.id) {
-                try {
-                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                    const schema = await fetchDatabaseSchema(sourceConnections[0].id, selectedAgentId || undefined);
-                    if (schema) sourceSchemas.push(schema);
-                } catch (e) { console.warn('Source schema fetch failed', e); }
-            }
-            if (targetConnection?.id) {
-                try {
-                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                    targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
-                } catch (e) { console.warn('Target schema fetch failed', e); }
-            }
+            // Keep step-2 analysis fast and deterministic.
+            // Live schema metadata fetching can block (e.g., when no agent is online), and is handled in structure validation.
 
             // Aggregated Results
             const aggregatedParsedMappings: any[] = [];
             const aggregatedSourceTables = new Set<string>();
             const aggregatedTargetTables = new Set<string>();
             const aggregatedErrors: string[] = [];
+            let hasBlockingMissingCells = false;
 
             const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
 
@@ -576,6 +576,14 @@ export default function AIComparison() {
                 if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
                     aggregatedErrors.push(`[${sheet.name}] No valid mappings found.`);
                     continue;
+                }
+
+                const skipped = parsed.metadata?.skippedRows;
+                if (skipped && (skipped.missingSource > 0 || skipped.missingTarget > 0)) {
+                    hasBlockingMissingCells = true;
+                    aggregatedErrors.push(
+                        `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name.`
+                    );
                 }
 
                 // Add sheet name to mappings for context
@@ -595,6 +603,11 @@ export default function AIComparison() {
                 throw new Error("INVALID_LAYOUT");
             }
 
+            if (hasBlockingMissingCells) {
+                setAnalysisError(aggregatedErrors.join('\n'));
+                throw new Error("INVALID_LAYOUT");
+            }
+
             const preliminaryAnalysis = {
                 sourceTables: Array.from(aggregatedSourceTables),
                 targetTables: Array.from(aggregatedTargetTables),
@@ -603,18 +616,10 @@ export default function AIComparison() {
                 mappings: aggregatedParsedMappings
             };
 
-            // Match to real schema
-            const matchedAnalysis = await matchToRealSchema(preliminaryAnalysis, sourceSchemas[0], targetSchema);
-            setAnalysis(matchedAnalysis);
+            const analysisWithPlaceholders = replaceTablePlaceholders(preliminaryAnalysis as any, sourceConnections[0], targetConnection);
+            setAnalysis(analysisWithPlaceholders);
 
-            // Validate Structure
-            if ((multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id) && targetConnection?.id) {
-                setTimeout(() => {
-                    handleValidateStructure(aggregatedParsedMappings);
-                }, 300);
-            } else {
-                toast({ title: "Connections Required", description: "Select source and target connections to validate." });
-            }
+            toast({ title: "Analysis Ready", description: "Review the mappings, then click Validate Structure when you're ready." });
 
         } catch (error) {
             console.error('Analysis error:', error);
@@ -1465,12 +1470,17 @@ export default function AIComparison() {
         }
 
         const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
-        if (!hasSource && !targetConnection) {
+        if (!hasSource || !targetConnection) {
             toast({
                 title: "Connections Required",
-                description: "Please select at least one connection (source or target) to validate structure.",
+                description: "Please select both Source and Target connections to validate structure.",
                 variant: "destructive"
             });
+            return;
+        }
+
+        if (!selectedAgentId) {
+            toast({ title: "Agent Required", description: "Please select an active ETL Agent in Step 1 to run metadata validation.", variant: "destructive" });
             return;
         }
 
@@ -1966,7 +1976,7 @@ export default function AIComparison() {
     };
 
     return (
-        <ResizablePanelGroup direction="horizontal" dir="ltr" className="h-[calc(100vh-100px)] overflow-hidden rounded-xl border bg-background">
+        <ResizablePanelGroup direction="horizontal" dir="ltr" className="h-full min-h-0 min-w-0 overflow-hidden rounded-xl border bg-background">
             {!isHistorySidebarHidden && (
                 <>
                     <ResizablePanel defaultSize={20} minSize={15} maxSize={30}>
@@ -1980,8 +1990,8 @@ export default function AIComparison() {
                 </>
             )}
 
-            <ResizablePanel defaultSize={isHistorySidebarHidden ? 100 : 80}>
-                <div className="h-full space-y-5 overflow-auto bg-muted/20 p-4 sm:p-6">
+            <ResizablePanel defaultSize={isHistorySidebarHidden ? 100 : 80} className="min-w-0">
+                <div className="h-full min-w-0 space-y-5 overflow-y-auto overflow-x-hidden bg-muted/20 p-4 sm:p-6">
                     <div className="rounded-xl border bg-card p-4 shadow-sm">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
@@ -2115,10 +2125,26 @@ export default function AIComparison() {
                                 onFileSelect={handleFileSelect}
                                 onChangeFile={() => {
                                     setUploadedFile(null);
+                                    setSheets([]);
+                                    setSelectedSheetNames([]);
+                                    setAnalysisError(null);
                                     setAnalysis(null);
                                     setValidationResults(null);
                                     setSelectedTestIndices([]);
                                 }}
+                                mappingSheetMode={mappingSheetMode}
+                                onMappingSheetModeChange={(mode) => {
+                                    setMappingSheetMode(mode);
+                                    // Avoid mixing states between modes.
+                                    setUploadedFile(null);
+                                    setSheets([]);
+                                    setSelectedSheetNames([]);
+                                    setAnalysisError(null);
+                                    setAnalysis(null);
+                                    setValidationResults(null);
+                                    setSelectedTestIndices([]);
+                                }}
+                                onReplaceWorkbook={replaceWorkbook}
                                 savedConnections={savedConnections}
                                 sourceConnections={sourceConnections}
                                 multiSourceMode={multiSourceMode}

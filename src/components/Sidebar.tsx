@@ -131,7 +131,7 @@ export function Sidebar() {
 
     return (
         <aside className={cn(
-            "border-r bg-card min-h-screen sticky top-0 h-screen transition-all duration-300 flex flex-col z-40 shadow-sm",
+            "border-r bg-card h-full transition-all duration-300 flex flex-col z-40 shadow-sm",
             isCollapsed ? "w-16" : "w-64"
         )}>
             {/* App Header with Toggle */}

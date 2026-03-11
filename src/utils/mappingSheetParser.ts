@@ -28,6 +28,11 @@ export interface ParsedMappingSheet {
         totalRows: number;
         detectedColumns: string[];
         formatConfidence: number;
+        skippedRows?: {
+            missingSource: number;
+            missingTarget: number;
+            placeholder: number;
+        };
     };
 }
 
@@ -255,14 +260,22 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
     };
 
     const sourceCol = findBestColumn([
-        'source', 'src', 'from', 'source field', 'source column', 'source_field', 'source_column',
+        'source', 'src', 'from',
+        'source field', 'source field name',
+        'source column', 'source column name', 'source_column',
+        'source attribute', 'source attribute name',
+        'source_field',
         'input', 'origin', 'source_col', 'srcfield', 'src_col', 'source system', 'source_system',
         'nac', 'legacy', 'old', 'current', 'existing', 'src_field'
     ]);
 
     const targetCol = findBestColumn([
-        'target', 'tgt', 'to', 'dest', 'destination', 'target field', 'target column',
-        'target_field', 'target_column', 'output', 'target_col', 'tgtfield', 'tgt_col',
+        'target', 'tgt', 'to', 'dest', 'destination',
+        'target field', 'target field name',
+        'target column', 'target column name', 'target_column',
+        'target attribute', 'target attribute name',
+        'target_field',
+        'output', 'target_col', 'tgtfield', 'tgt_col',
         'edw', 'warehouse', 'dw', 'data warehouse', 'new', 'target system', 'target_system', 'tgt_field'
     ]);
 
@@ -273,14 +286,14 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         'remarks', 'notes', 'spec', 'specification', 'instruction', 'transformation_rule'
     ]);
 
-    const srcTableCol = findBestColumn(['source table', 'src_table', 'source_table', 'source_entity', 'src_entity']);
-    const tgtTableCol = findBestColumn(['target table', 'tgt_table', 'target_table', 'target_entity', 'tgt_entity']);
+    const srcTableCol = findBestColumn(['source table', 'source table name', 'src table', 'src table name', 'src_table', 'source_table', 'source_entity', 'src_entity']);
+    const tgtTableCol = findBestColumn(['target table', 'target table name', 'tgt table', 'tgt table name', 'tgt_table', 'target_table', 'target_entity', 'tgt_entity']);
     const srcSchemaCol = findBestColumn(['source schema', 'src_schema', 'source_schema']);
     const tgtSchemaCol = findBestColumn(['target schema', 'tgt_schema', 'target_schema']);
     const srcDbCol = findBestColumn(['source database', 'src_database', 'source_db', 'src_db']);
     const tgtDbCol = findBestColumn(['target database', 'tgt_database', 'target_db', 'tgt_db']);
-    const srcDataTypeCol = findBestColumn(['source data type', 'source datatype', 'src data type', 'src datatype', 'source_type']);
-    const tgtDataTypeCol = findBestColumn(['target data type', 'target datatype', 'tgt data type', 'tgt datatype', 'target_type']);
+    const srcDataTypeCol = findBestColumn(['source data type', 'source attribute data type', 'source datatype', 'src data type', 'src datatype', 'source_type']);
+    const tgtDataTypeCol = findBestColumn(['target data type', 'target attribute data type', 'target datatype', 'tgt data type', 'tgt datatype', 'target_type']);
     const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description']);
 
     if (!sourceCol && !targetCol) {
@@ -298,6 +311,7 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
     const sourceTables = new Set<string>();
     const targetTables = new Set<string>();
     const transformationRules: string[] = [];
+    const skippedRows = { missingSource: 0, missingTarget: 0, placeholder: 0 };
 
     // --- PHASE 3: EXTREME FILL-DOWN LOGIC ---
     let lastSourceDb: string | undefined;
@@ -327,8 +341,22 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
 
         const normalizedSource = resolveCandidateColumn(sourceValue);
         const normalizedTarget = resolveCandidateColumn(targetValue);
+
+        const hasAnyMappingSignal = Boolean(
+            (sourceValue && String(sourceValue).trim()) ||
+            (targetValue && String(targetValue).trim())
+        );
+
+        if (hasAnyMappingSignal) {
+            if (!normalizedSource && normalizedTarget) skippedRows.missingSource++;
+            if (!normalizedTarget && normalizedSource) skippedRows.missingTarget++;
+        }
+
         if (!normalizedSource || !normalizedTarget) return;
-        if (isPlaceholderValue(normalizedSource) || isPlaceholderValue(normalizedTarget)) return;
+        if (isPlaceholderValue(normalizedSource) || isPlaceholderValue(normalizedTarget)) {
+            skippedRows.placeholder++;
+            return;
+        }
 
         let rowSourceTable: string | undefined;
         let rowTargetTable: string | undefined;
@@ -407,7 +435,8 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         metadata: {
             totalRows: data.length,
             detectedColumns: columns,
-            formatConfidence: confidence
+            formatConfidence: confidence,
+            skippedRows
         }
     };
 }

@@ -97,7 +97,7 @@ export function WorkflowStepper({ currentStep, onStepChange, canAccessStep, onRe
                 {children}
             </div>
 
-            <div className="sticky bottom-0 z-10 flex items-center justify-between rounded-xl border bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4">
+            <div className="flex items-center justify-between rounded-xl border bg-card px-3 py-3 sm:px-4">
                 <Button
                     onClick={() => onStepChange(currentStep - 1)}
                     disabled={currentStep === 1}

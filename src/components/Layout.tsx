@@ -371,14 +371,14 @@ const LayoutContent = ({ children, currentView, onViewChange, selectedProject, o
   const { toggleSidebar } = useSidebar();
 
   return (
-    <div className="min-h-screen flex w-full bg-background pt-16">
+    <div className="h-screen overflow-hidden flex w-full bg-background pt-16">
       <AppSidebar
         currentView={currentView}
         onViewChange={onViewChange}
         selectedProject={selectedProject}
         onBackToProjects={onBackToProjects}
       />
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
         <div className="fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
           <div className="h-16 flex items-center px-4 gap-4">
             <Button variant="ghost" size="icon" onClick={toggleSidebar} className="h-8 w-8 z-50">
@@ -389,7 +389,7 @@ const LayoutContent = ({ children, currentView, onViewChange, selectedProject, o
             </div>
           </div>
         </div>
-        <main className="flex-1 p-6">{children}</main>
+        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden p-6">{children}</main>
       </div>
     </div>
   );

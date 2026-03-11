@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, FileText, Trash2, Plus, Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, Folder, FileText, Trash2, Plus, Search } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -180,9 +180,9 @@ export function TestHistorySidebar({ savedRuns, onLoadRun, onDeleteRun, onDelete
                             >
                                 <div className="flex items-center gap-2 flex-1 overflow-hidden">
                                     {expandedFolders.has(folder) ? (
-                                        <ChevronDown className="h-3 w-3 shrink-0" />
+                                        <ChevronUp className="h-3 w-3 shrink-0" />
                                     ) : (
-                                        <ChevronRight className="h-3 w-3 shrink-0" />
+                                        <ChevronDown className="h-3 w-3 shrink-0" />
                                     )}
                                     <Folder className="h-3.5 w-3.5 shrink-0 text-blue-500/70" />
                                     <span className="truncate">{folder}</span>
