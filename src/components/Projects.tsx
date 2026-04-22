@@ -45,6 +45,19 @@ export const Projects = ({ onProjectSelect }: ProjectsProps) => {
   const { toast } = useToast();
   const { isAdmin, loading: roleLoading } = useRoles();
 
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  };
+
   useEffect(() => {
     fetchProjects();
   }, []);
@@ -52,17 +65,31 @@ export const Projects = ({ onProjectSelect }: ProjectsProps) => {
   const fetchProjects = async () => {
     try {
       // First get all non-deleted projects
-      const { data: projectsData, error: projectsError } = await supabase
-        .from('projects')
-        .select('*')
-        .is('deleted_at', null)
-        .order('updated_at', { ascending: false });
+      const { data: projectsData, error: projectsError } = await withTimeout(
+        supabase
+          .from('projects')
+          .select('*')
+          .is('deleted_at', null)
+          .order('updated_at', { ascending: false }),
+        12000,
+        'Loading projects'
+      );
 
       if (projectsError) throw projectsError;
 
-      // Then get member counts and names for each project
-      const projectsWithMemberCount = await Promise.all(
-        (projectsData || []).map(async (project) => {
+      const baseProjects = (projectsData || []).map((project) => ({
+        ...project,
+        member_count: 0,
+        member_names: []
+      }));
+
+      setProjects(baseProjects);
+      setLoading(false);
+
+      // Then enrich member counts and names in the background. These calls are
+      // useful, but they should never block opening the Projects page.
+      const projectResults = await Promise.allSettled(
+        baseProjects.map(async (project) => {
           const { count, error: countError } = await supabase
             .from('project_members')
             .select('*', { count: 'exact', head: true })
@@ -107,16 +134,25 @@ export const Projects = ({ onProjectSelect }: ProjectsProps) => {
           };
         })
       );
-      
-      setProjects(projectsWithMemberCount);
+
+      setProjects((currentProjects) =>
+        currentProjects.map((project) => {
+          const matched = projectResults.find((result) =>
+            result.status === 'fulfilled' && result.value.id === project.id
+          );
+          return matched?.status === 'fulfilled' ? matched.value : project;
+        })
+      );
     } catch (error) {
       console.error('Error fetching projects:', error);
+      setProjects([]);
       toast({
         title: "Error",
-        description: "Failed to load projects",
+        description: error instanceof Error && error.message.includes('timed out')
+          ? "Project data request timed out. Refresh or check Supabase connectivity."
+          : "Failed to load projects",
         variant: "destructive",
       });
-    } finally {
       setLoading(false);
     }
   };
@@ -177,7 +213,7 @@ export const Projects = ({ onProjectSelect }: ProjectsProps) => {
     }
   };
 
-  if (loading || roleLoading) {
+  if (loading) {
     return (
       <div className="p-6">
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

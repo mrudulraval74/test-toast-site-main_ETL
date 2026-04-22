@@ -1675,12 +1675,14 @@ Deno.serve(async (req) => {
             const registerBody = {
               project_id: body.projectId || body.project_id,
               agent_name: body.agentName || body.agent_name,
+              agent_type: body.agentType || body.agent_type || 'selenium',
               capabilities: {
                 browsers: body.browsers || ['chromium'],
                 max_capacity: body.capacity || 3,
               },
               metadata: {
                 agent_id: body.agentId || body.agent_id,
+                agent_type: body.agentType || body.agent_type || 'selenium',
               },
             };
 
@@ -1700,6 +1702,7 @@ Deno.serve(async (req) => {
                 project_id: registerBody.project_id,
                 agent_name: registerBody.agent_name,
                 agent_id: registerBody.metadata.agent_id || `agent-${Date.now()}`,
+                agent_type: registerBody.agent_type,
                 api_token_hash: apiKey,
                 config: {
                   capabilities: registerBody.capabilities,
@@ -1724,11 +1727,12 @@ Deno.serve(async (req) => {
 
             await logActivity(agent.id, 'agent_registered', {
               agent_name: registerBody.agent_name,
+              agent_type: registerBody.agent_type,
               capabilities: registerBody.capabilities,
               project_id: registerBody.project_id,
             });
 
-            console.log(`Agent registered via action: ${agent.id} (${registerBody.agent_name})`);
+            console.log(`Agent registered via action: ${agent.id} (${registerBody.agent_name}, type: ${registerBody.agent_type})`);
 
             return new Response(
               JSON.stringify({

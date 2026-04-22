@@ -486,23 +486,32 @@ export default function AIComparison() {
                 data: XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false })
             }));
 
+            const isQaStandardUpload = mappingSheetMode === 'qa_standard';
+            const selectedNames = loadedSheets.map((sheet) => sheet.name);
+
             setSheets(loadedSheets);
             // Reset previous analysis state; user will explicitly click Analyze Selected.
             setAnalysis(null);
             setValidationResults(null);
             setAnalysisError(null);
-            setIsSheetInQAStandardFormat(false); // Standard upload is raw mapping sheet, not QA standard yet
+            setSelectedTestIndices([]);
+            setIsSheetInQAStandardFormat(isQaStandardUpload);
 
             if (loadedSheets.length > 0) {
                 const firstSheet = loadedSheets[0];
                 setUploadedFile({ name: file.name, data: firstSheet.data });
-                // Select first sheet by default
-                setSelectedSheetNames([firstSheet.name]);
+                setSelectedSheetNames(selectedNames);
 
                 toast({
                     title: "File Loaded",
-                    description: `Loaded ${loadedSheets.length} sheet${loadedSheets.length > 1 ? 's' : ''}. Select sheets to analyze.`
+                    description: isQaStandardUpload
+                        ? `Loaded ${loadedSheets.length} QA standard sheet${loadedSheets.length > 1 ? 's' : ''}. Analyzing now.`
+                        : `Loaded ${loadedSheets.length} sheet${loadedSheets.length > 1 ? 's' : ''}. Select sheets to analyze.`
                 });
+
+                if (isQaStandardUpload) {
+                    await analyzeMapping(loadedSheets, { forceQaStandard: true });
+                }
             } else {
                 toast({ title: "Empty File", description: "No sheets found in file.", variant: "destructive" });
             }
@@ -510,7 +519,11 @@ export default function AIComparison() {
         reader.readAsBinaryString(file);
     };
 
-    const replaceWorkbook = (nextFileName: string, nextSheets: { name: string; data: any[] }[]) => {
+    const replaceWorkbook = async (
+        nextFileName: string,
+        nextSheets: { name: string; data: any[] }[],
+        options?: { analyze?: boolean }
+    ) => {
         setSheets(nextSheets);
         setAnalysis(null);
         setValidationResults(null);
@@ -528,8 +541,12 @@ export default function AIComparison() {
 
         toast({
             title: "Workbook Loaded",
-            description: `Loaded ${nextSheets.length} sheet${nextSheets.length === 1 ? "" : "s"}.`
+            description: `Loaded ${nextSheets.length} QA standard sheet${nextSheets.length === 1 ? "" : "s"}.`
         });
+
+        if (nextSheets.length > 0 && options?.analyze !== false) {
+            await analyzeMapping(nextSheets, { forceQaStandard: true });
+        }
     };
 
     const handleSheetsSelectionChange = (names: string[]) => {
@@ -543,7 +560,7 @@ export default function AIComparison() {
             toast({ title: "No Selection", description: "Please select at least one sheet to analyze.", variant: "destructive" });
             return;
         }
-        analyzeMapping(selectedSheets);
+        analyzeMapping(selectedSheets, { forceQaStandard: isSheetInQAStandardFormat });
     };
 
     const createFallbackTestCases = (mappingData: any[]): MappingAnalysis => {
@@ -551,13 +568,17 @@ export default function AIComparison() {
     };
 
     // Updated to handle multiple sheets and QA Standard format
-    const analyzeMapping = async (sheetsToAnalyze: { name: string, data: any[] }[]) => {
+    const analyzeMapping = async (
+        sheetsToAnalyze: { name: string, data: any[] }[],
+        options?: { forceQaStandard?: boolean }
+    ) => {
         setIsAnalyzing(true);
         setAnalysisError(null);
         setValidationResults(null); // Clear previous results
 
         try {
-            console.log(`Analyzing ${sheetsToAnalyze.length} sheets (QA Standard: ${isSheetInQAStandardFormat})...`);
+            const useQaStandardFormat = options?.forceQaStandard ?? isSheetInQAStandardFormat;
+            console.log(`Analyzing ${sheetsToAnalyze.length} sheets (QA Standard: ${useQaStandardFormat})...`);
 
             // Keep step-2 analysis fast and deterministic.
             // Live schema metadata fetching can block (e.g., when no agent is online), and is handled in structure validation.
@@ -570,14 +591,17 @@ export default function AIComparison() {
             let hasBlockingMissingCells = false;
 
             // Handle QA Standard Format vs Raw Mapping Sheet
-            if (isSheetInQAStandardFormat) {
+            if (useQaStandardFormat) {
                 // QA Standard Format: Extract mappings directly from known column headers
                 for (const sheet of sheetsToAnalyze) {
                     console.log(`Extracting QA Standard format from sheet: ${sheet.name}`);
                     
                     const mappings = sheet.data.filter((row: any) => {
                         // Filter out empty rows
-                        return row['Target Table Name'] || row['Source Table Name'];
+                        return row['Target Table Name'] ||
+                            row['Source Table Name'] ||
+                            row['Target Attribute Name'] ||
+                            row['Source Attribute Name'];
                     }).map((row: any) => ({
                         sourceColumn: row['Source Attribute Name'] || '',
                         targetColumn: row['Target Attribute Name'] || '',
@@ -646,7 +670,7 @@ export default function AIComparison() {
                 throw new Error("INVALID_LAYOUT");
             }
 
-            if (hasBlockingMissingCells && !isSheetInQAStandardFormat) {
+            if (hasBlockingMissingCells && !useQaStandardFormat) {
                 setAnalysisError(aggregatedErrors.join('\n'));
                 throw new Error("INVALID_LAYOUT");
             }
@@ -1225,6 +1249,7 @@ export default function AIComparison() {
                 let timeoutId: ReturnType<typeof setTimeout> | null = null;
                 let resolved = false;
                 let notFoundPollErrors = 0;
+                let transientPollErrors = 0;
                 let terminalStateProcessing = false;
 
                 const clearTracking = () => {
@@ -1283,9 +1308,52 @@ export default function AIComparison() {
                             notFoundPollErrors += 1;
                             return;
                         }
+                        if (transientPollErrors < 5) {
+                            transientPollErrors += 1;
+                            return;
+                        }
+
+                        // Edge Function polling can briefly fail while the agent is still
+                        // submitting its terminal result. Query the queue table directly so
+                        // Actual Result shows the agent/SQL error instead of a generic
+                        // network message whenever possible.
+                        const { data: fallbackJob } = await supabase
+                            .from('agent_job_queue' as any)
+                            .select('status, result, error_log')
+                            .eq('id', jobId)
+                            .maybeSingle();
+
+                        if (fallbackJob?.status === 'failed' || fallbackJob?.status === 'error') {
+                            finalize(
+                                'fail',
+                                fallbackJob.error_log
+                                    ? formatExecutionErrorMessage(fallbackJob.error_log, 'execution')
+                                    : "Execution failed before comparison result was produced."
+                            );
+                            return;
+                        }
+
+                        if (fallbackJob?.status === 'completed') {
+                            const result = fallbackJob.result || {};
+                            const success = evaluateComparisonSuccess(result);
+                            finalize(success ? 'pass' : 'fail', buildActualResultMessage(result, success), {
+                                sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
+                                targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
+                                sourceData: result.source_data || [],
+                                targetData: result.target_data || [],
+                                comparisonData: result.comparison_rows || [],
+                                compareColumns: result.compareColumns || [],
+                                comparisonType: testCase.category || 'general',
+                                mismatchData: buildMismatchReportRows(result)
+                            });
+                            return;
+                        }
+
                         finalize('fail', formatExecutionErrorMessage(statusError, 'poll'));
                         return;
                     }
+
+                    transientPollErrors = 0;
 
                     const jobStatus = statusData?.status;
                     const resultPayload = statusData?.result || {};
@@ -1355,10 +1423,51 @@ export default function AIComparison() {
                     }
                 }, 1000); // Poll every 1 second for faster status updates
 
-                // Timeout after 60 seconds
-                timeoutId = setTimeout(() => {
-                    finalize('fail', "Execution timed out while waiting for agent response. Please retry.");
-                }, 60000);
+                // Timeout after 5 minutes. SQL Server comparisons can take longer
+                // than simple API calls, especially through the self-hosted agent.
+                timeoutId = setTimeout(async () => {
+                    if (resolved) return;
+
+                    const { data: timeoutJob } = await supabase
+                        .from('agent_job_queue' as any)
+                        .select('status, result, error_log')
+                        .eq('id', jobId)
+                        .maybeSingle();
+
+                    if (timeoutJob?.status === 'completed') {
+                        const result = timeoutJob.result || {};
+                        const success = evaluateComparisonSuccess(result);
+                        finalize(success ? 'pass' : 'fail', buildActualResultMessage(result, success), {
+                            sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
+                            targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
+                            sourceData: result.source_data || [],
+                            targetData: result.target_data || [],
+                            comparisonData: result.comparison_rows || [],
+                            compareColumns: result.compareColumns || [],
+                            comparisonType: testCase.category || 'general',
+                            mismatchData: buildMismatchReportRows(result)
+                        });
+                        return;
+                    }
+
+                    if (timeoutJob?.status === 'failed' || timeoutJob?.status === 'error') {
+                        finalize(
+                            'fail',
+                            timeoutJob.error_log
+                                ? formatExecutionErrorMessage(timeoutJob.error_log, 'execution')
+                                : "Execution failed before comparison result was produced."
+                        );
+                        return;
+                    }
+
+                    const stillRunning = timeoutJob?.status === 'running' || timeoutJob?.status === 'pending';
+                    finalize(
+                        'fail',
+                        stillRunning
+                            ? "Execution is still running after 5 minutes. Check the self-hosted agent console or reduce the query size, then retry."
+                            : "Execution timed out while waiting for agent response. Please retry."
+                    );
+                }, 300000);
             });
 
         } catch (error) {
@@ -1505,9 +1614,13 @@ export default function AIComparison() {
 
 
     const handleValidateStructure = async (directMappings?: any[]) => {
-        const mappingsToValidate = directMappings || analysis?.mappings;
+        const mappingsToValidate = Array.isArray(directMappings)
+            ? directMappings
+            : Array.isArray(analysis?.mappings)
+                ? analysis.mappings
+                : [];
 
-        if (!mappingsToValidate || mappingsToValidate.length === 0) {
+        if (mappingsToValidate.length === 0) {
             toast({ title: "No Mappings Found", description: "Cannot validate structure without mapping details.", variant: "destructive" });
             return;
         }

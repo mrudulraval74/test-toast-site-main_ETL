@@ -53,7 +53,11 @@ interface UploadValidationStepProps {
 
     mappingSheetMode?: MappingSheetMode;
     onMappingSheetModeChange?: (mode: MappingSheetMode) => void;
-    onReplaceWorkbook?: (fileName: string, nextSheets: { name: string; data: any[] }[]) => void;
+    onReplaceWorkbook?: (
+        fileName: string,
+        nextSheets: { name: string; data: any[] }[],
+        options?: { analyze?: boolean }
+    ) => void | Promise<void>;
 }
 
 export function UploadValidationStep({
@@ -299,9 +303,10 @@ export function UploadValidationStep({
         }
 
         try {
-            onReplaceWorkbook(
+            await onReplaceWorkbook(
                 `QA_Standard_${convertFileName || 'mapping'}`,
-                convertedPreviewSheets
+                convertedPreviewSheets,
+                { analyze: true }
             );
 
             setShowConvertDialog(false);
@@ -688,7 +693,7 @@ export function UploadValidationStep({
                                             className="w-full"
                                             size="sm"
                                             variant="outline"
-                                            onClick={onValidate}
+                                            onClick={() => onValidate()}
                                             disabled={isValidating || isAnalyzing}
                                         >
                                             {isValidating ? (
@@ -750,7 +755,7 @@ export function UploadValidationStep({
                                 <Button
                                     className="w-full"
                                     variant="outline"
-                                    onClick={onValidate}
+                                    onClick={() => onValidate()}
                                     disabled={isValidating || isAnalyzing}
                                 >
                                     {isValidating ? (

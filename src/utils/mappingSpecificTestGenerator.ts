@@ -65,6 +65,18 @@ function resolveColumnName(schema: DatabaseSchema | null | undefined, tableName:
     return col ? col.name : columnName;
 }
 
+function resolveTableName(schema: DatabaseSchema | null | undefined, tableName: string | undefined): string {
+    if (!tableName) return '';
+    if (!schema) return tableName;
+
+    const table = findTableInSchema(schema, tableName);
+    if (!table) return tableName;
+
+    // Use schema-qualified names for generated SQL. In SQL Server, a table like
+    // AdventureWorks2019.Person.Person cannot be queried as just "Person".
+    return table.fullName || `${table.schema}.${table.tableName}`;
+}
+
 /**
  * Detect the ETL phase based on table names
  */
@@ -242,8 +254,8 @@ export function generateMappingSpecificTests(
     }>();
 
     validatedMappings.forEach(m => {
-        const sTab = m.sourceTable || defaultSourceTable;
-        const tTab = m.targetTable || defaultTargetTable;
+        const sTab = resolveTableName(sourceSchema, m.sourceTable || defaultSourceTable);
+        const tTab = resolveTableName(targetSchema, m.targetTable || defaultTargetTable);
         const key = `${sTab}=>${tTab}`;
         if (!tablePairs.has(key)) {
             tablePairs.set(key, { sourceTable: sTab, targetTable: tTab, mappings: [] });
@@ -488,8 +500,8 @@ export function generateMappingSpecificTests(
     }
 
     return {
-        sourceTables: Array.from(parsed.sourceTables),
-        targetTables: Array.from(parsed.targetTables),
+        sourceTables: Array.from(new Set(Array.from(parsed.sourceTables).map((table) => resolveTableName(sourceSchema, table)))),
+        targetTables: Array.from(new Set(Array.from(parsed.targetTables).map((table) => resolveTableName(targetSchema, table)))),
         businessRules,
         testCases,
         mappings: validatedMappings
