@@ -251,6 +251,7 @@ export default function AIComparison() {
     const [sheets, setSheets] = useState<{ name: string; data: any[] }[]>([]);
     const [selectedSheetNames, setSelectedSheetNames] = useState<string[]>([]);
     const [mappingSheetMode, setMappingSheetMode] = useState<MappingSheetMode>('qa_standard');
+    const [isSheetInQAStandardFormat, setIsSheetInQAStandardFormat] = useState(false);
     const [analysis, setAnalysis] = useState<MappingAnalysis | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -490,6 +491,7 @@ export default function AIComparison() {
             setAnalysis(null);
             setValidationResults(null);
             setAnalysisError(null);
+            setIsSheetInQAStandardFormat(false); // Standard upload is raw mapping sheet, not QA standard yet
 
             if (loadedSheets.length > 0) {
                 const firstSheet = loadedSheets[0];
@@ -514,6 +516,7 @@ export default function AIComparison() {
         setValidationResults(null);
         setAnalysisError(null);
         setSelectedTestIndices([]);
+        setIsSheetInQAStandardFormat(true); // Mark as QA Standard format since this comes from conversion
 
         if (nextSheets.length > 0) {
             setUploadedFile({ name: nextFileName, data: nextSheets[0].data });
@@ -547,14 +550,14 @@ export default function AIComparison() {
         return generateMappingSpecificTests(mappingData);
     };
 
-    // Updated to handle multiple sheets
+    // Updated to handle multiple sheets and QA Standard format
     const analyzeMapping = async (sheetsToAnalyze: { name: string, data: any[] }[]) => {
         setIsAnalyzing(true);
         setAnalysisError(null);
         setValidationResults(null); // Clear previous results
 
         try {
-            console.log(`Analyzing ${sheetsToAnalyze.length} sheets...`);
+            console.log(`Analyzing ${sheetsToAnalyze.length} sheets (QA Standard: ${isSheetInQAStandardFormat})...`);
 
             // Keep step-2 analysis fast and deterministic.
             // Live schema metadata fetching can block (e.g., when no agent is online), and is handled in structure validation.
@@ -566,35 +569,75 @@ export default function AIComparison() {
             const aggregatedErrors: string[] = [];
             let hasBlockingMissingCells = false;
 
-            const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
+            // Handle QA Standard Format vs Raw Mapping Sheet
+            if (isSheetInQAStandardFormat) {
+                // QA Standard Format: Extract mappings directly from known column headers
+                for (const sheet of sheetsToAnalyze) {
+                    console.log(`Extracting QA Standard format from sheet: ${sheet.name}`);
+                    
+                    const mappings = sheet.data.filter((row: any) => {
+                        // Filter out empty rows
+                        return row['Target Table Name'] || row['Source Table Name'];
+                    }).map((row: any) => ({
+                        sourceColumn: row['Source Attribute Name'] || '',
+                        targetColumn: row['Target Attribute Name'] || '',
+                        sourceTable: row['Source Table Name'] || '',
+                        targetTable: row['Target Table Name'] || '',
+                        transformationType: 'direct_move' as const,
+                        transformationLogic: row['Data Mapping Rule'] || '',
+                        sourceDataType: row['Source Attribute DataType'] || '',
+                        targetDataType: row['Target Attribute DataType'] || '',
+                        notes: row['Notes'] || '',
+                        comments: row['Notes'] || '',
+                        complexity: 'simple' as const,
+                        _sheetName: sheet.name
+                    }));
 
-            // Iterate and Parse
-            for (const sheet of sheetsToAnalyze) {
-                console.log(`Parsing sheet: ${sheet.name}`);
-                const parsed = parseMappingSheet(sheet.data);
+                    if (mappings.length === 0) {
+                        aggregatedErrors.push(`[${sheet.name}] No valid mappings found in QA Standard format.`);
+                        continue;
+                    }
 
-                if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
-                    aggregatedErrors.push(`[${sheet.name}] No valid mappings found.`);
-                    continue;
+                    aggregatedParsedMappings.push(...mappings);
+                    
+                    // Extract unique tables
+                    mappings.forEach((m: any) => {
+                        if (m.sourceTable) aggregatedSourceTables.add(m.sourceTable);
+                        if (m.targetTable) aggregatedTargetTables.add(m.targetTable);
+                    });
                 }
+            } else {
+                // Raw Mapping Format: Use parser to detect and extract mappings
+                const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
 
-                const skipped = parsed.metadata?.skippedRows;
-                if (skipped && (skipped.missingSource > 0 || skipped.missingTarget > 0)) {
-                    hasBlockingMissingCells = true;
-                    aggregatedErrors.push(
-                        `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name.`
-                    );
+                // Iterate and Parse
+                for (const sheet of sheetsToAnalyze) {
+                    console.log(`Parsing raw mapping sheet: ${sheet.name}`);
+                    const parsed = parseMappingSheet(sheet.data);
+
+                    if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
+                        aggregatedErrors.push(`[${sheet.name}] No valid mappings found.`);
+                        continue;
+                    }
+
+                    const skipped = parsed.metadata?.skippedRows;
+                    if (skipped && (skipped.missingSource > 0 || skipped.missingTarget > 0)) {
+                        hasBlockingMissingCells = true;
+                        aggregatedErrors.push(
+                            `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name.`
+                        );
+                    }
+
+                    // Add sheet name to mappings for context
+                    const mappingsWithContext = parsed.columnMappings.map(m => ({
+                        ...m,
+                        _sheetName: sheet.name
+                    }));
+
+                    aggregatedParsedMappings.push(...mappingsWithContext);
+                    parsed.sourceTables.forEach(t => aggregatedSourceTables.add(t));
+                    parsed.targetTables.forEach(t => aggregatedTargetTables.add(t));
                 }
-
-                // Add sheet name to mappings for context
-                const mappingsWithContext = parsed.columnMappings.map(m => ({
-                    ...m,
-                    _sheetName: sheet.name
-                }));
-
-                aggregatedParsedMappings.push(...mappingsWithContext);
-                parsed.sourceTables.forEach(t => aggregatedSourceTables.add(t));
-                parsed.targetTables.forEach(t => aggregatedTargetTables.add(t));
             }
 
             if (aggregatedParsedMappings.length === 0) {
@@ -603,7 +646,7 @@ export default function AIComparison() {
                 throw new Error("INVALID_LAYOUT");
             }
 
-            if (hasBlockingMissingCells) {
+            if (hasBlockingMissingCells && !isSheetInQAStandardFormat) {
                 setAnalysisError(aggregatedErrors.join('\n'));
                 throw new Error("INVALID_LAYOUT");
             }
@@ -2131,6 +2174,7 @@ export default function AIComparison() {
                                     setAnalysis(null);
                                     setValidationResults(null);
                                     setSelectedTestIndices([]);
+                                    setIsSheetInQAStandardFormat(false);
                                 }}
                                 mappingSheetMode={mappingSheetMode}
                                 onMappingSheetModeChange={(mode) => {
@@ -2143,6 +2187,7 @@ export default function AIComparison() {
                                     setAnalysis(null);
                                     setValidationResults(null);
                                     setSelectedTestIndices([]);
+                                    setIsSheetInQAStandardFormat(false);
                                 }}
                                 onReplaceWorkbook={replaceWorkbook}
                                 savedConnections={savedConnections}
