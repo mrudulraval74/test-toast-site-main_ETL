@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Upload, FileSpreadsheet, Loader2, ShieldCheck, CheckCircle, AlertTriangle, XCircle, Download, Copy, Database, Layers, Plus, AlertCircle } from 'lucide-react';
+import { Upload, FileSpreadsheet, Loader2, ShieldCheck, CheckCircle, AlertTriangle, XCircle, Download, Copy, Database, Layers, Plus, AlertCircle, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +20,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
+import { getRecognizedKeywords } from '@/utils/promptTestEnhancer';
 
 type MappingSheetMode = 'qa_standard' | 'convert_to_qa_standard';
 
@@ -58,6 +60,9 @@ interface UploadValidationStepProps {
         nextSheets: { name: string; data: any[] }[],
         options?: { analyze?: boolean }
     ) => void | Promise<void>;
+
+    promptInstructions?: string;
+    onPromptInstructionsChange?: (value: string) => void;
 }
 
 export function UploadValidationStep({
@@ -89,9 +94,13 @@ export function UploadValidationStep({
     onAnalyzeSelected,
     mappingSheetMode = 'qa_standard',
     onMappingSheetModeChange,
-    onReplaceWorkbook
+    onReplaceWorkbook,
+    promptInstructions = '',
+    onPromptInstructionsChange
 }: UploadValidationStepProps) {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const [isPromptExpanded, setIsPromptExpanded] = useState(!!promptInstructions);
+    const recognizedKeywords = useMemo(() => getRecognizedKeywords(promptInstructions), [promptInstructions]);
 
     const handleAddSource = () => {
         onSourceConnectionsChange([...sourceConnections, { id: null, name: 'None' }]);
@@ -161,6 +170,10 @@ export function UploadValidationStep({
         try {
             const XLSX = await import('xlsx');
             const reader = new FileReader();
+            reader.onerror = () => {
+                console.error('FileReader error:', reader.error);
+                setConvertError("File is in use or inaccessible. Please close it in Excel/OneDrive and try again.");
+            };
             reader.onload = (evt) => {
                 try {
                     const bstr = evt.target?.result;
@@ -203,15 +216,15 @@ export function UploadValidationStep({
         'Target Attribute Name': m.targetColumn || '',
         'Target Attribute DataType': m.targetDataType || '',
         'Target Attribute DataSize': '',
-        'Target Key': '',
-        'Target IsNullable': '',
+        'Target Key': m.isPrimaryKey ? 'Y' : '',
+        'Target IsNullable': m.isNullable === false ? 'N' : (m.isNullable === true ? 'Y' : ''),
 
         'Source Table Name': m.sourceTable || '',
         'Source Attribute Name': m.sourceColumn || '',
         'Source Attribute DataType': m.sourceDataType || '',
         'Source Attribute DataSize': '',
-        'Source Key': '',
-        'Source IsNullable': '',
+        'Source Key': m.isPrimaryKey ? 'Y' : '',
+        'Source IsNullable': m.isNullable === false ? 'N' : (m.isNullable === true ? 'Y' : ''),
 
         'Data Mapping Rule': m.transformationLogic || m.transformationType || '',
         'Notes': m.notes || m.comments || '',
@@ -519,6 +532,60 @@ export function UploadValidationStep({
                         </div>
                     )}
                 </CardContent>
+            </Card>
+
+            {/* Prompt Instructions */}
+            <Card className="border-border shadow-sm">
+                <CardHeader
+                    className="border-b bg-muted/10 px-4 py-3 cursor-pointer select-none"
+                    onClick={() => setIsPromptExpanded(prev => !prev)}
+                >
+                    <div className="flex items-center justify-between">
+                        <div className="space-y-1">
+                            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                                <Sparkles className="h-4 w-4 text-amber-500" />
+                                Test Generation Instructions
+                                {recognizedKeywords.length > 0 && (
+                                    <Badge variant="secondary" className="h-4 px-1.5 text-[10px] bg-amber-500/10 text-amber-700 border-none">
+                                        {recognizedKeywords.length} rule{recognizedKeywords.length !== 1 ? 's' : ''} detected
+                                    </Badge>
+                                )}
+                            </CardTitle>
+                            <CardDescription className="text-xs">
+                                Provide natural language instructions to generate targeted ETL test cases
+                            </CardDescription>
+                        </div>
+                        {isPromptExpanded
+                            ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                            : <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        }
+                    </div>
+                </CardHeader>
+                {isPromptExpanded && (
+                    <CardContent className="pt-4 space-y-3">
+                        <Textarea
+                            value={promptInstructions}
+                            onChange={(e) => onPromptInstructionsChange?.(e.target.value)}
+                            placeholder={`Describe what to validate, e.g.:\n• Validate row counts between source and target\n• Check for NULL values in all date columns\n• Add aggregate SUM/MIN/MAX checks for Amount columns\n• Verify no leading or trailing whitespace\n• Check distinct counts for all columns\n• Validate referential integrity for ID columns`}
+                            className="min-h-[120px] text-sm font-mono resize-y"
+                        />
+                        {recognizedKeywords.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                                <span className="text-xs text-muted-foreground font-medium mr-1 self-center">Detected:</span>
+                                {recognizedKeywords.map((kw) => (
+                                    <Badge key={kw} variant="secondary" className="h-5 text-[11px] bg-amber-50 text-amber-700 border-amber-200">
+                                        {kw}
+                                    </Badge>
+                                ))}
+                            </div>
+                        )}
+                        {promptInstructions.trim() && recognizedKeywords.length === 0 && (
+                            <p className="text-xs text-muted-foreground italic">
+                                No recognized patterns yet. Try keywords like: row count, null, aggregate, duplicate, trim, date, distinct, boundary, completeness, rounding, data type, referential.
+                            </p>
+                        )}
+                    </CardContent>
+                )}
             </Card>
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -1166,9 +1233,15 @@ export function UploadValidationStep({
                                                             'Target Table Name',
                                                             'Target Attribute Name',
                                                             'Target Attribute DataType',
+                                                            'Target Attribute DataSize',
+                                                            'Target Key',
+                                                            'Target IsNullable',
                                                             'Source Table Name',
                                                             'Source Attribute Name',
                                                             'Source Attribute DataType',
+                                                            'Source Attribute DataSize',
+                                                            'Source Key',
+                                                            'Source IsNullable',
                                                             'Data Mapping Rule',
                                                             'Notes',
                                                             'Original Sheet',

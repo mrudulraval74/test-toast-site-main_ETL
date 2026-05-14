@@ -256,6 +256,9 @@ export default function AIComparison() {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
 
+    // Prompt Instructions State
+    const [promptInstructions, setPromptInstructions] = useState<string>('');
+
     // SQL Dialog State
     const [showSQLDialog, setShowSQLDialog] = useState(false);
     const [selectedSQL, setSelectedSQL] = useState<{ source: string; target: string; name: string } | null>(null);
@@ -411,21 +414,7 @@ export default function AIComparison() {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
-    // Load Connections on mount
-    useEffect(() => {
-        const loadConnections = async () => {
-            try {
-                const { data } = await connectionsApi.list();
-                if (data && Array.isArray(data)) {
-                    setSavedConnections(data);
-                    console.log('Loaded', data.length, 'connections');
-                }
-            } catch (error) {
-                console.error('Failed to load connections:', error);
-            }
-        };
-        loadConnections();
-    }, []);
+    // Load Connections and History on mount
 
     // Load Connections
     useEffect(() => {
@@ -769,7 +758,8 @@ export default function AIComparison() {
                     targetSchema,
                     'Unknown_Pipeline',
                     sourceConnections[0]?.type,
-                    targetConnection?.type
+                    targetConnection?.type,
+                    promptInstructions
                 );
 
                 // 3. Extract unique table pairs from this sheet (for metadata/row count tagging if needed)
@@ -2323,6 +2313,8 @@ export default function AIComparison() {
                                 selectedSheetNames={selectedSheetNames}
                                 onSheetsSelectionChange={handleSheetsSelectionChange}
                                 onAnalyzeSelected={handleAnalyzeSelected}
+                                promptInstructions={promptInstructions}
+                                onPromptInstructionsChange={setPromptInstructions}
 
                             />
                         )

@@ -166,8 +166,8 @@ export const AgentManagement = ({ projectId }: AgentManagementProps) => {
     setIsLoading(true);
     try {
       await Promise.all([loadAgents(), loadJobs(), loadPerformanceJobs(), loadExecutionResults()]);
-    } catch (error) {
-      console.error("Error loading agent data:", error);
+    } catch (error: any) {
+      console.error("Error loading agent data:", JSON.stringify(error) || error.message || error);
       toast({
         title: "Error",
         description: "Failed to load agent data",
@@ -179,50 +179,70 @@ export const AgentManagement = ({ projectId }: AgentManagementProps) => {
   };
 
   const loadAgents = async () => {
-    const { data, error } = await supabase
-      .from("self_hosted_agents")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("self_hosted_agents")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false });
 
-    if (error) throw error;
-    setAgents(data || []);
+      if (error) throw error;
+      setAgents(data || []);
+    } catch (error: any) {
+      console.error("Error loading agents:", JSON.stringify(error) || error.message);
+      setAgents([]);
+    }
   };
 
   const loadJobs = async () => {
-    const { data, error } = await supabase
-      .from("agent_job_queue")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(100);
+    try {
+      const { data, error } = await supabase
+        .from("agent_job_queue")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(100);
 
-    if (error) throw error;
-    setJobs(data || []);
+      if (error) throw error;
+      setJobs(data || []);
+    } catch (error: any) {
+      console.error("Error loading jobs:", JSON.stringify(error) || error.message);
+      setJobs([]);
+    }
   };
 
   const loadPerformanceJobs = async () => {
-    const { data, error } = await supabase
-      .from("performance_jobs")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(100);
+    try {
+      const { data, error } = await supabase
+        .from("performance_jobs")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(100);
 
-    if (error) throw error;
-    setPerformanceJobs(data || []);
+      if (error) throw error;
+      setPerformanceJobs(data || []);
+    } catch (error: any) {
+      console.error("Error loading performance jobs:", JSON.stringify(error) || error.message);
+      setPerformanceJobs([]);
+    }
   };
 
   const loadExecutionResults = async () => {
-    const { data, error } = await supabase
-      .from("agent_execution_results")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-      .limit(100);
+    try {
+      const { data, error } = await supabase
+        .from("agent_execution_results")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(100);
 
-    if (error) throw error;
-    setExecutionResults(data || []);
+      if (error) throw error;
+      setExecutionResults(data || []);
+    } catch (error: any) {
+      console.error("Error loading execution results:", JSON.stringify(error) || error.message);
+      setExecutionResults([]);
+    }
   };
 
   const handleRegisterAgent = async () => {

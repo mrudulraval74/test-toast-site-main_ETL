@@ -16,12 +16,15 @@ export interface ColumnMapping {
     transformationLogic?: string;
     tableName?: string;
     complexity: 'simple' | 'medium' | 'complex';
+    isPrimaryKey?: boolean;
+    isNullable?: boolean;
 }
 
 export interface ParsedMappingSheet {
     sourceTables: Set<string>;
     targetTables: Set<string>;
     columnMappings: ColumnMapping[];
+    testCases?: any[];
     detectedFormat: string;
     transformationRules: string[];
     metadata: {
@@ -49,8 +52,9 @@ function isPlaceholderValue(value: any): boolean {
     const normalized = normalizeToken(value);
     if (!normalized) return true;
     if (PLACEHOLDER_TOKENS.has(normalized)) return true;
+    // Don't treat generic names as placeholders if they might be actual column names in some DBs
+    // but keep very generic ones like 'column_1'
     if (/^column[_\s-]?\d+$/i.test(normalized)) return true;
-    if (/^(source|target|field|column)$/i.test(normalized)) return true;
     return false;
 }
 
@@ -68,6 +72,11 @@ function resolveCandidateColumn(value: any): string {
     const cleaned = cleanIdentifier(value);
     if (!cleaned) return '';
 
+    // Handle comma-separated columns
+    if (cleaned.includes(',')) {
+        return cleaned.split(',').map(s => cleanIdentifier(s)).filter(Boolean).join(', ');
+    }
+
     // Extract trailing identifier from `db.schema.table.column` / `table.column`
     const direct = cleaned.match(/([a-zA-Z_][a-zA-Z0-9_]*)(\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*))?$/);
     if (direct) return cleanIdentifier(direct[3] || direct[1]);
@@ -84,16 +93,9 @@ function normalizeEmbeddedHeaderRows(data: any[]): any[] {
     if (originalKeys.length === 0) return data;
 
     const headerHints = [
-        'target column',
-        'source column',
-        'source table',
-        'source schema',
-        'target table',
-        'target schema',
-        'transformation',
-        'business rule',
-        'target data type',
-        'source data type'
+        'target column', 'source column', 'source table', 'source schema',
+        'target table', 'target schema', 'transformation', 'business rule',
+        'target data type', 'source data type', 'test case', 'test scenario'
     ];
 
     let headerIndex = -1;
@@ -117,7 +119,7 @@ function normalizeEmbeddedHeaderRows(data: any[]): any[] {
         }
     }
 
-    if (bestScore < 3 || headerIndex < 0) return data;
+    if (bestScore < 1 || headerIndex < 0) return data;
 
     const headerRow = data[headerIndex];
     const headers = originalKeys.map((k, idx) => {
@@ -147,25 +149,15 @@ function normalizeEmbeddedHeaderRows(data: any[]): any[] {
     return rebuilt.length > 0 ? rebuilt : data;
 }
 
-/**
- * Intelligently parses any mapping sheet format with Extreme Intelligence
- */
 export function parseMappingSheet(data: any[]): ParsedMappingSheet {
-    if (!data || data.length === 0) {
-        return createEmptyResult();
-    }
+    if (!data || data.length === 0) return createEmptyResult();
 
     const normalizedData = normalizeEmbeddedHeaderRows(data);
-    if (normalizedData.length === 0) {
-        return createEmptyResult();
-    }
+    if (normalizedData.length === 0) return createEmptyResult();
 
-    // --- PHASE 1: HEADER DISCOVERY ---
-    // Scan top 15 rows to find the "true" header row (the one with the most ETL keywords)
     let headerRowIdx = 0;
     let maxKeywordCount = 0;
     const searchLimit = Math.min(normalizedData.length, 15);
-
     const etlKeywords = [
         'source', 'target', 'transformation', 'mapping', 'logic', 'rule', 'field', 'column',
         'src', 'tgt', 'business', 'rule', 'extraction', 'loading', 'metadata', 'comment'
@@ -174,40 +166,38 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
     for (let i = 0; i < searchLimit; i++) {
         const row = normalizedData[i];
         if (!row) continue;
-
         const rowKeys = Object.keys(row);
         const rowValues = Object.values(row).map(v => String(v || '').toLowerCase());
-
         let keywordCount = 0;
-        // Check keys (property names)
-        rowKeys.forEach(k => {
-            if (etlKeywords.some(kw => k.toLowerCase().includes(kw))) keywordCount++;
-        });
-        // Check values (if the first row of data actually contains labels)
-        rowValues.forEach(v => {
-            if (etlKeywords.some(kw => v.includes(kw))) keywordCount += 2; // Priority to value-based headers
-        });
-
-        if (keywordCount > maxKeywordCount) {
-            maxKeywordCount = keywordCount;
-            headerRowIdx = i;
-        }
+        rowKeys.forEach(k => { if (etlKeywords.some(kw => k.toLowerCase().includes(kw))) keywordCount++; });
+        rowValues.forEach(v => { if (etlKeywords.some(kw => v.includes(kw))) keywordCount += 2; });
+        if (keywordCount > maxKeywordCount) { maxKeywordCount = keywordCount; headerRowIdx = i; }
     }
 
-    console.log(`🔍 Header Discovery: Found metadata row at index ${headerRowIdx} (score: ${maxKeywordCount})`);
-
-    // Slice data to start from the discovered header
     const effectiveData = normalizedData.slice(headerRowIdx);
     if (effectiveData.length === 0) return createEmptyResult();
+    const columnNames = Object.keys(effectiveData[0]);
 
-    const firstRow = effectiveData[0];
-    const columnNames = Object.keys(firstRow);
+    // Check for Vertical Metadata (Field | Value) at the very top
+    const metadata: any = {};
+    const fieldCol = findColumn(columnNames, ['field', 'key', 'attribute']);
+    const valueCol = findColumn(columnNames, ['value', 'details', 'name']);
+    
+    if (fieldCol && valueCol) {
+        effectiveData.slice(0, 10).forEach(row => {
+            const f = normalizeToken(row[fieldCol]);
+            const v = String(row[valueCol] || '').trim();
+            if (f.includes('target table')) metadata.targetTable = v;
+            if (f.includes('source table') || f === 'source') metadata.sourceTable = v;
+            if (f.includes('notes')) metadata.notes = v;
+        });
+    }
 
-    // Try different parsing strategies
     const strategies = [
         parseStandardFormat,
         parseMultiSourceFormat,
         parseTransformationRuleFormat,
+        parseTestCaseFormat,
         parseVerticalFormat,
         parseGenericFormat
     ];
@@ -216,7 +206,7 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
     let highestConfidence = 0;
 
     for (const strategy of strategies) {
-        const result = strategy(effectiveData, columnNames);
+        const result = strategy(effectiveData, columnNames, metadata);
         if (result && result.metadata.formatConfidence > highestConfidence) {
             highestConfidence = result.metadata.formatConfidence;
             bestResult = result;
@@ -226,22 +216,15 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
     return bestResult || createEmptyResult();
 }
 
-/**
- * Strategy 1: Standard Format (Source Column | Target Column | Transformation)
- * NOW FEATURING: Probabilistic Column Scoring & Enhanced Fill-Down
- */
-function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
-    // --- PHASE 2: PROBABILISTIC COLUMN SCORING ---
+function parseStandardFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
     const scoreColumn = (col: string, keywords: string[]): number => {
         const normalized = col.toLowerCase().replace(/[_\s-]/g, '');
         let score = 0;
-
         for (const kw of keywords) {
             const normalizedKw = kw.toLowerCase().replace(/[_\s-]/g, '');
             if (normalized === normalizedKw) score += 1.0;
             else if (normalized.startsWith(normalizedKw) || normalized.endsWith(normalizedKw)) score += 0.8;
             else if (normalized.includes(normalizedKw)) score += 0.6;
-            else if (normalizedKw.includes(normalized)) score += 0.4;
         }
         return score;
     };
@@ -251,246 +234,139 @@ function parseStandardFormat(data: any[], columns: string[]): ParsedMappingSheet
         let maxScore = 0;
         for (const col of columns) {
             const score = scoreColumn(col, keywords);
-            if (score > maxScore) {
-                maxScore = score;
-                bestCol = col;
-            }
+            if (score > maxScore) { maxScore = score; bestCol = col; }
         }
         return maxScore > 0.3 ? bestCol : null;
     };
 
-    const sourceCol = findBestColumn([
-        'source', 'src', 'from',
-        'source field', 'source field name',
-        'source column', 'source column name', 'source_column',
-        'source attribute', 'source attribute name',
-        'source_field',
-        'input', 'origin', 'source_col', 'srcfield', 'src_col', 'source system', 'source_system',
-        'nac', 'legacy', 'old', 'current', 'existing', 'src_field'
-    ]);
+    const sourceCol = findBestColumn(['source', 'src', 'from', 'source field', 'source column', 'source_column', 'source_field', 'source_col', 'src_field', 'source_name', 'source attribute', 'source_attribute', 'input field', 'legacy column', 'old column']);
+    const targetCol = findBestColumn(['target', 'tgt', 'to', 'dest', 'destination', 'target field', 'target column', 'target_column', 'target_field', 'target_col', 'tgt_field', 'target_name', 'target attribute', 'target_attribute', 'output field', 'warehouse column', 'new column']);
+    const transformCol = findBestColumn(['transformation', 'transform', 'rule', 'logic', 'formula', 'business rule', 'mapping logic', 'transformation_logic', 'syntax', 'description', 'rule description', 'logic description', 'transformation_rule', 'mapping_rule', 'business_logic']);
+    const srcTableCol = findBestColumn(['source table', 'src table', 'src_table', 'source_table', 'source entity', 'source_entity', 'src entity', 'src_entity', 'source system', 'src system']);
+    const tgtTableCol = findBestColumn(['target table', 'tgt table', 'tgt_table', 'target_table', 'target entity', 'target_entity', 'tgt entity', 'tgt_entity', 'target system', 'tgt system']);
+    const srcSchemaCol = findBestColumn(['source schema', 'src_schema', 'source_schema', 'source_db_schema']);
+    const tgtSchemaCol = findBestColumn(['target schema', 'tgt_schema', 'target_schema', 'target_db_schema']);
+    const srcDbCol = findBestColumn(['source database', 'src_db', 'source_db', 'source_database_name']);
+    const tgtDbCol = findBestColumn(['target database', 'tgt_db', 'target_db', 'target_database_name']);
+    const srcDataTypeCol = findBestColumn(['source data type', 'source datatype', 'src datatype', 'source_type', 'source format', 'input type']);
+    const tgtDataTypeCol = findBestColumn(['target data type', 'target datatype', 'tgt datatype', 'target_type', 'target format', 'output type']);
+    const pkCol = findBestColumn(['primary key', 'pk', 'key', 'is key', 'is_key', 'unique key', 'identifier']);
+    const nullCol = findBestColumn(['is nullable', 'nullable', 'null', 'allow null', 'is_nullable', 'optional']);
+    const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description', 'business_notes', 'mapping_notes']);
 
-    const targetCol = findBestColumn([
-        'target', 'tgt', 'to', 'dest', 'destination',
-        'target field', 'target field name',
-        'target column', 'target column name', 'target_column',
-        'target attribute', 'target attribute name',
-        'target_field',
-        'output', 'target_col', 'tgtfield', 'tgt_col',
-        'edw', 'warehouse', 'dw', 'data warehouse', 'new', 'target system', 'target_system', 'tgt_field'
-    ]);
+    if (!sourceCol && !targetCol) return null;
+    
+    // Log matched columns for debugging
+    console.log(`📊 Column Matching Debug:
+      Source: ${sourceCol}
+      Target: ${targetCol}
+      Transform: ${transformCol}
+      SrcTable: ${srcTableCol}
+      TgtTable: ${tgtTableCol}
+      PK: ${pkCol}
+      Null: ${nullCol}
+    `);
 
-    const transformCol = findBestColumn([
-        'transformation', 'transform', 'rule', 'logic', 'formula', 'business rule',
-        'mapping logic', 'transformation_logic', 'transform_rule', 'business_rule',
-        'mapping', 'conversion', 'calculation', 'expression', 'function', 'comments',
-        'remarks', 'notes', 'spec', 'specification', 'instruction', 'transformation_rule'
-    ]);
-
-    const srcTableCol = findBestColumn(['source table', 'source table name', 'src table', 'src table name', 'src_table', 'source_table', 'source_entity', 'src_entity']);
-    const tgtTableCol = findBestColumn(['target table', 'target table name', 'tgt table', 'tgt table name', 'tgt_table', 'target_table', 'target_entity', 'tgt_entity']);
-    const srcSchemaCol = findBestColumn(['source schema', 'src_schema', 'source_schema']);
-    const tgtSchemaCol = findBestColumn(['target schema', 'tgt_schema', 'target_schema']);
-    const srcDbCol = findBestColumn(['source database', 'src_database', 'source_db', 'src_db']);
-    const tgtDbCol = findBestColumn(['target database', 'tgt_database', 'target_db', 'tgt_db']);
-    const srcDataTypeCol = findBestColumn(['source data type', 'source attribute data type', 'source datatype', 'src data type', 'src datatype', 'source_type']);
-    const tgtDataTypeCol = findBestColumn(['target data type', 'target attribute data type', 'target datatype', 'tgt data type', 'tgt datatype', 'target_type']);
-    const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description']);
-
-    if (!sourceCol && !targetCol) {
-        return null;
-    }
-
-    const confidence = (sourceCol ? 0.35 : 0) + (targetCol ? 0.35 : 0) + (transformCol ? 0.2 : 0) + (srcTableCol ? 0.1 : 0);
-
-    if (confidence < 0.4) {
-        return null;
-    }
+    const confidence = (sourceCol ? 0.4 : 0) + (targetCol ? 0.4 : 0) + (transformCol ? 0.2 : 0) + (srcTableCol ? 0.1 : 0);
+    if (confidence < 0.25) return null; // Lowered threshold to be more inclusive of sparse sheets
 
     const mappings: ColumnMapping[] = [];
-    const dedupe = new Set<string>();
     const sourceTables = new Set<string>();
     const targetTables = new Set<string>();
     const transformationRules: string[] = [];
     const skippedRows = { missingSource: 0, missingTarget: 0, placeholder: 0 };
+    const dedupe = new Set<string>();
 
-    // --- PHASE 3: EXTREME FILL-DOWN LOGIC ---
-    let lastSourceDb: string | undefined;
-    let lastSourceSchema: string | undefined;
-    let lastSourceTable: string | undefined;
-    let lastTargetDb: string | undefined;
-    let lastTargetSchema: string | undefined;
-    let lastTargetTable: string | undefined;
+    let lastSDB: string | undefined, lastSS: string | undefined, lastST: string = verticalMetadata.sourceTable || '';
+    let lastTDB: string | undefined, lastTS: string | undefined, lastTT: string = verticalMetadata.targetTable || '';
 
-    // Detect if this is the specialized 19-column enterprise format
-    const isEnterpriseFormat = columns.length === 19;
-
-    data.forEach((row, idx) => {
-        // ... (cleaning logic remains same)
+    data.forEach(row => {
         const cleanVal = (val: any) => {
-            if (!val) return null;
+            if (val == null) return null;
             const str = String(val).trim();
             return (str === '' || str === '-') ? null : str;
         };
 
-        let sourceValue = isEnterpriseFormat ? cleanVal(row[columns[3]]) : (sourceCol ? cleanVal(row[sourceCol]) : null);
-        let targetValue = isEnterpriseFormat ? cleanVal(row[columns[13]]) : (targetCol ? cleanVal(row[targetCol]) : null);
-        let transformValue = isEnterpriseFormat ? cleanVal(row[columns[17]]) : (transformCol ? cleanVal(row[transformCol]) : null);
-        const sourceDataTypeValue = srcDataTypeCol ? cleanVal(row[srcDataTypeCol]) : null;
-        const targetDataTypeValue = tgtDataTypeCol ? cleanVal(row[tgtDataTypeCol]) : null;
-        const notesValue = notesCol ? cleanVal(row[notesCol]) : null;
+        const sourceValue = sourceCol ? cleanVal(row[sourceCol]) : null;
+        const targetValue = targetCol ? cleanVal(row[targetCol]) : null;
+        const transformValue = transformCol ? cleanVal(row[transformCol]) : null;
+
+        const hasAnyMappingSignal = Boolean(sourceValue || targetValue || transformValue);
+        if (!hasAnyMappingSignal) return;
 
         const normalizedSource = resolveCandidateColumn(sourceValue);
         const normalizedTarget = resolveCandidateColumn(targetValue);
 
-        const hasAnyMappingSignal = Boolean(
-            (sourceValue && String(sourceValue).trim()) ||
-            (targetValue && String(targetValue).trim())
-        );
-
-        if (hasAnyMappingSignal) {
-            if (!normalizedSource && normalizedTarget) skippedRows.missingSource++;
-            if (!normalizedTarget && normalizedSource) skippedRows.missingTarget++;
-        }
-
-        if (!normalizedSource || !normalizedTarget) return;
-        if (isPlaceholderValue(normalizedSource) || isPlaceholderValue(normalizedTarget)) {
+        if (isPlaceholderValue(normalizedSource) && isPlaceholderValue(normalizedTarget) && !transformValue) {
             skippedRows.placeholder++;
             return;
         }
 
-        let rowSourceTable: string | undefined;
-        let rowTargetTable: string | undefined;
+        if (srcDbCol && cleanVal(row[srcDbCol])) lastSDB = cleanVal(row[srcDbCol])!;
+        if (srcSchemaCol && cleanVal(row[srcSchemaCol])) lastSS = cleanVal(row[srcSchemaCol])!;
+        if (srcTableCol && cleanVal(row[srcTableCol])) lastST = cleanVal(row[srcTableCol])!;
+        if (tgtDbCol && cleanVal(row[tgtDbCol])) lastTDB = cleanVal(row[tgtDbCol])!;
+        if (tgtSchemaCol && cleanVal(row[tgtSchemaCol])) lastTS = cleanVal(row[tgtSchemaCol])!;
+        if (tgtTableCol && cleanVal(row[tgtTableCol])) lastTT = cleanVal(row[tgtTableCol])!;
 
-        if (isEnterpriseFormat) {
-            const sSchema = String(row[columns[1]] || '').trim();
-            const sTable = String(row[columns[2]] || '').trim();
-            const tSchema = String(row[columns[11]] || '').trim();
-            const tTable = String(row[columns[12]] || '').trim();
-
-            if (sSchema) lastSourceSchema = sSchema;
-            if (sTable) lastSourceTable = sTable;
-            if (tSchema) lastTargetSchema = tSchema;
-            if (tTable) lastTargetTable = tTable;
-
-            const partsS = [lastSourceSchema, lastSourceTable].filter(Boolean);
-            rowSourceTable = partsS.join('.');
-            const partsT = [lastTargetSchema, lastTargetTable].filter(Boolean);
-            rowTargetTable = partsT.join('.');
-        } else {
-            const sDb = srcDbCol ? String(row[srcDbCol] || '').trim() : '';
-            const sSchema = srcSchemaCol ? String(row[srcSchemaCol] || '').trim() : '';
-            const sTable = srcTableCol ? String(row[srcTableCol] || '').trim() : '';
-            const tDb = tgtDbCol ? String(row[tgtDbCol] || '').trim() : '';
-            const tSchema = tgtSchemaCol ? String(row[tgtSchemaCol] || '').trim() : '';
-            const tTable = tgtTableCol ? String(row[tgtTableCol] || '').trim() : '';
-
-            if (sDb) lastSourceDb = sDb;
-            if (sSchema) lastSourceSchema = sSchema;
-            if (sTable) lastSourceTable = sTable;
-            if (tDb) lastTargetDb = tDb;
-            if (tSchema) lastTargetSchema = tSchema;
-            if (tTable) lastTargetTable = tTable;
-
-            const partsS = [lastSourceDb, lastSourceSchema, lastSourceTable].filter(Boolean);
-            rowSourceTable = partsS.join('.');
-            const partsT = [lastTargetDb, lastTargetSchema, lastTargetTable].filter(Boolean);
-            rowTargetTable = partsT.join('.');
-        }
+        const rowSourceTable = [lastSDB, lastSS, lastST].filter(Boolean).join('.');
+        const rowTargetTable = [lastTDB, lastTS, lastTT].filter(Boolean).join('.');
 
         if (rowSourceTable) sourceTables.add(rowSourceTable);
         if (rowTargetTable) targetTables.add(rowTargetTable);
 
-        const transformType = detectTransformationType(transformValue);
-        const complexity = assessComplexity(transformValue);
+        // Allow row if it has at least a target OR transformation logic
+        if (!normalizedTarget && !transformValue) return;
 
-        const dedupeKey = `${rowSourceTable || ''}|${rowTargetTable || ''}|${normalizedSource.toLowerCase()}|${normalizedTarget.toLowerCase()}`;
+        const dedupeKey = `${rowSourceTable}|${rowTargetTable}|${(normalizedSource || '').toLowerCase()}|${(normalizedTarget || '').toLowerCase()}|${(transformValue || '').toLowerCase()}`;
         if (dedupe.has(dedupeKey)) return;
         dedupe.add(dedupeKey);
 
         mappings.push({
-            sourceColumn: normalizedSource,
+            sourceColumn: normalizedSource || 'Expression/Constant',
             targetColumn: normalizedTarget,
             sourceTable: rowSourceTable,
             targetTable: rowTargetTable,
-            transformationType: transformType,
+            transformationType: detectTransformationType(transformValue),
             transformationLogic: transformValue ? String(transformValue).trim() : undefined,
-            sourceDataType: sourceDataTypeValue ? String(sourceDataTypeValue).trim() : undefined,
-            targetDataType: targetDataTypeValue ? String(targetDataTypeValue).trim() : undefined,
-            notes: notesValue ? String(notesValue).trim() : undefined,
-            comments: notesValue ? String(notesValue).trim() : undefined,
-            complexity
+            sourceDataType: srcDataTypeCol ? cleanVal(row[srcDataTypeCol]) || undefined : undefined,
+            targetDataType: tgtDataTypeCol ? cleanVal(row[tgtDataTypeCol]) || undefined : undefined,
+            notes: notesCol ? cleanVal(row[notesCol]) || undefined : undefined,
+            complexity: assessComplexity(transformValue),
+            isPrimaryKey: pkCol ? /y|yes|true|1|pk/i.test(String(row[pkCol] || '')) : undefined,
+            isNullable: nullCol ? /y|yes|true|1|null/i.test(String(row[nullCol] || '')) : undefined
         });
 
-        if (transformValue && String(transformValue).trim()) {
-            transformationRules.push(String(transformValue).trim());
-        }
+        if (transformValue) transformationRules.push(String(transformValue).trim());
     });
 
     return {
-        sourceTables,
-        targetTables,
-        columnMappings: mappings,
-        detectedFormat: isEnterpriseFormat ? 'Enterprise Mapping (19-col)' : 'Standard Mapping (Scored)',
+        sourceTables, targetTables, columnMappings: mappings,
+        detectedFormat: 'Standard Mapping (Scored)',
         transformationRules,
-        metadata: {
-            totalRows: data.length,
-            detectedColumns: columns,
-            formatConfidence: confidence,
-            skippedRows
-        }
+        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: confidence, skippedRows }
     };
 }
 
-/**
- * Strategy 2: Multi-Source Format (Target | Source1 | Source2 | Source3...)
- */
-function parseMultiSourceFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
+function parseMultiSourceFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
     const targetCol = findColumn(columns, ['target', 'edw', 'warehouse', 'target field']);
+    if (!targetCol) return null;
+    const potentialSourceCols = columns.filter(c => c !== targetCol && !/note|comment|desc|complex|logic/i.test(c));
+    if (potentialSourceCols.length < 2) return null;
 
-    if (!targetCol) {
-        return null;
-    }
-
-    // Other columns are likely source systems
-    const potentialSourceCols = columns.filter(c =>
-        c !== targetCol &&
-        !c.toLowerCase().includes('note') &&
-        !c.toLowerCase().includes('comment') &&
-        !c.toLowerCase().includes('description') &&
-        !c.toLowerCase().includes('complexity') &&
-        !c.toLowerCase().includes('logic')
-    );
-
-    if (potentialSourceCols.length < 2) {
-        return null;
-    }
-
-    const confidence = 0.7;
     const mappings: ColumnMapping[] = [];
-    const sourceTables = new Set<string>();
-    const targetTables = new Set<string>();
-    const transformationRules: string[] = [];
-
-    // Add source system names as tables
-    potentialSourceCols.forEach(col => sourceTables.add(col));
-    targetTables.add('Target Warehouse');
-
     data.forEach(row => {
         const targetValue = resolveCandidateColumn(row[targetCol]);
         if (!targetValue || isPlaceholderValue(targetValue)) return;
-
         potentialSourceCols.forEach(sourceCol => {
             const sourceValue = resolveCandidateColumn(row[sourceCol]);
             if (sourceValue && !isPlaceholderValue(sourceValue)) {
-                const transformType = detectTransformationFromValue(sourceValue);
-
                 mappings.push({
                     sourceColumn: `${sourceCol}.${sourceValue}`,
-                    targetColumn: String(targetValue),
+                    targetColumn: targetValue,
                     sourceTable: sourceCol,
                     targetTable: 'Target Warehouse',
-                    transformationType: transformType,
-                    tableName: sourceCol,
+                    transformationType: 'direct_move',
                     complexity: 'simple'
                 });
             }
@@ -498,42 +374,41 @@ function parseMultiSourceFormat(data: any[], columns: string[]): ParsedMappingSh
     });
 
     return {
-        sourceTables,
-        targetTables,
+        sourceTables: new Set(potentialSourceCols),
+        targetTables: new Set(['Target Warehouse']),
         columnMappings: mappings,
-        detectedFormat: 'Multi-Source (Multiple systems → Single target)',
-        transformationRules,
-        metadata: {
-            totalRows: data.length,
-            detectedColumns: columns,
-            formatConfidence: confidence
-        }
+        detectedFormat: 'Multi-Source',
+        transformationRules: [],
+        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: 0.7 }
     };
 }
 
-/**
- * Strategy 3: Transformation Rule Format (Rule# | Description | Syntax)
- */
-function parseTransformationRuleFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
+function parseTransformationRuleFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
     const ruleCol = findColumn(columns, ['rule', 'sr', 'no', '#', 'rule name']);
     const descCol = findColumn(columns, ['description', 'desc']);
     const syntaxCol = findColumn(columns, ['syntax', 'sql', 'formula', 'code']);
+    if (!ruleCol && !descCol) return null;
 
-    if (!ruleCol && !descCol) {
-        return null;
-    }
-
-    const confidence = 0.6;
     const transformationRules: string[] = [];
+    const testCases: any[] = [];
 
     data.forEach(row => {
-        const rule = ruleCol ? row[ruleCol] : null;
-        const desc = descCol ? row[descCol] : null;
-        const syntax = syntaxCol ? row[syntaxCol] : null;
+        const rule = ruleCol ? String(row[ruleCol] || '').trim() : '';
+        const desc = descCol ? String(row[descCol] || '').trim() : '';
+        const syntax = syntaxCol ? String(row[syntaxCol] || '').trim() : '';
 
         if (desc) {
-            const ruleText = `${rule ? rule + ': ' : ''}${desc}${syntax ? ' - ' + syntax : ''}`;
+            const ruleText = `${rule ? rule + ': ' : ''}${desc}`;
             transformationRules.push(ruleText);
+            
+            testCases.push({
+                name: rule || desc.substring(0, 50),
+                description: desc,
+                sourceSQL: syntax || 'N/A',
+                targetSQL: 'N/A',
+                expectedResult: 'Transformation should match business rule logic.',
+                category: 'business_rule'
+            });
         }
     });
 
@@ -541,208 +416,93 @@ function parseTransformationRuleFormat(data: any[], columns: string[]): ParsedMa
         sourceTables: new Set(['Source']),
         targetTables: new Set(['Target']),
         columnMappings: [],
-        detectedFormat: 'Transformation Rules (Rule definitions)',
+        testCases,
+        detectedFormat: 'Transformation Rules',
         transformationRules,
-        metadata: {
-            totalRows: data.length,
-            detectedColumns: columns,
-            formatConfidence: confidence
-        }
+        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: 0.6 }
     };
 }
 
-/**
- * Strategy 4: Vertical Format (rows represent mappings with metadata)
- */
-function parseVerticalFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
-    // Look for patterns where each row has complete mapping info
-    const hasMultipleMappingCols = columns.filter(c =>
-        c.toLowerCase().includes('source') ||
-        c.toLowerCase().includes('target')
-    ).length >= 2;
+function parseTestCaseFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
+    const tsNameCol = findColumn(columns, ['test scenario name', 'scenario name', 'ts name']);
+    const tcNameCol = findColumn(columns, ['test case name', 'tc name', 'test case']);
+    const tsIdCol = findColumn(columns, ['test scenario id', 'ts id']);
+    const tcIdCol = findColumn(columns, ['test case id', 'tc id']);
 
-    if (!hasMultipleMappingCols) {
-        return null;
-    }
+    if (!tsNameCol && !tcNameCol) return null;
+    const testCases: any[] = [];
+    let lastTsId = '', lastTsName = '';
 
-    return parseStandardFormat(data, columns); // Delegate to standard parser
-}
-
-/**
- * Strategy 5: Generic Format (fallback - try to extract any useful info)
- */
-function parseGenericFormat(data: any[], columns: string[]): ParsedMappingSheet | null {
-    const sourceTables = new Set<string>();
-    const targetTables = new Set<string>();
+    data.forEach(row => {
+        const tsId = String(row[tsIdCol || ''] || '').trim();
+        const tsName = String(row[tsNameCol || ''] || '').trim();
+        const tcName = String(row[tcNameCol || ''] || '').trim();
+        if (tsId) lastTsId = tsId;
+        if (tsName) lastTsName = tsName;
+        if (tcName) testCases.push({ id: row[tcIdCol || ''] || '', name: tcName, scenarioId: lastTsId, scenarioName: lastTsName });
+    });
 
     return {
-        sourceTables,
-        targetTables,
-        columnMappings: [],
-        detectedFormat: 'Generic (Uncertain format)',
-        transformationRules: [],
-        metadata: {
-            totalRows: data.length,
-            detectedColumns: columns,
-            formatConfidence: 0.05
-        }
+        sourceTables: new Set(['Source']), targetTables: new Set(['Target']), columnMappings: [], testCases,
+        detectedFormat: 'Test Case Specification',
+        transformationRules: testCases.map(tc => `${tc.scenarioName} > ${tc.name}`),
+        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: 0.8 }
     };
 }
 
-/**
- * Helper: Find column by fuzzy matching with enhanced accuracy
- */
+function parseVerticalFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
+    const hasMultipleMappingCols = columns.filter(c => /source|target/i.test(c)).length >= 2;
+    if (!hasMultipleMappingCols) return null;
+    return parseStandardFormat(data, columns, verticalMetadata);
+}
+
+function parseGenericFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
+    return {
+        sourceTables: new Set(), targetTables: new Set(), columnMappings: [], detectedFormat: 'Generic', transformationRules: [],
+        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: 0.05 }
+    };
+}
+
 function findColumn(columns: string[], keywords: string[]): string | null {
-    // First pass: exact matches (ignoring case, spaces, underscores, hyphens)
     for (const col of columns) {
-        const normalizedCol = col.toLowerCase().replace(/[_\s-]/g, '');
-        for (const keyword of keywords) {
-            const normalizedKeyword = keyword.toLowerCase().replace(/[_\s-]/g, '');
-            if (normalizedCol === normalizedKeyword) {
-                return col;
-            }
+        const normCol = col.toLowerCase().replace(/[_\s-]/g, '');
+        for (const kw of keywords) {
+            const normKw = kw.toLowerCase().replace(/[_\s-]/g, '');
+            if (normCol === normKw || normCol.includes(normKw) || normKw.includes(normCol)) return col;
         }
     }
-
-    // Second pass: starts with or ends with keyword
-    for (const col of columns) {
-        const lowerCol = col.toLowerCase();
-        for (const keyword of keywords) {
-            const lowerKeyword = keyword.toLowerCase();
-            if (lowerCol.startsWith(lowerKeyword) || lowerCol.endsWith(lowerKeyword)) {
-                return col;
-            }
-        }
-    }
-
-    // Third pass: contains keyword
-    for (const col of columns) {
-        const normalizedCol = col.toLowerCase().replace(/[_\s-]/g, '');
-        for (const keyword of keywords) {
-            const normalizedKeyword = keyword.toLowerCase().replace(/[_\s-]/g, '');
-            if (normalizedCol.includes(normalizedKeyword)) {
-                return col;
-            }
-        }
-    }
-
-    // Fourth pass: partial match (keyword contains col or vice versa)
-    for (const col of columns) {
-        const normalizedCol = col.toLowerCase().replace(/[_\s-]/g, '');
-        for (const keyword of keywords) {
-            const normalizedKeyword = keyword.toLowerCase().replace(/[_\s-]/g, '');
-            if (normalizedKeyword.includes(normalizedCol) || normalizedCol.includes(normalizedKeyword)) {
-                return col;
-            }
-        }
-    }
-
     return null;
 }
 
-/**
- * Detect transformation type from logic string with enhanced pattern matching
- */
-function detectTransformationType(transformLogic: any): ColumnMapping['transformationType'] {
-    if (!transformLogic) return 'direct_move';
-
-    const logic = String(transformLogic).toUpperCase();
-
-    // Check for specific patterns in order of specificity
-    if (logic.includes('JOIN') || logic.includes('LOOKUP') || logic.includes('MERGE') || logic.includes('FETCH')) return 'lookup';
-
-    // Date/Time transformations
-    if (logic.includes('FORMAT') || logic.includes('DATEFORMAT') ||
-        (logic.includes('CONVERT') && (logic.includes('DATE') || logic.includes('TIME')))) return 'date_format';
-    if (logic.includes('DATEADD') || logic.includes('DATEDIFF') || logic.includes('GETDATE') || logic.includes('SYSDATE')) return 'date_format';
-
-    // String transformations
-    if (logic.includes('LTRIM') || logic.includes('RTRIM') || logic.includes('TRIM')) return 'trim';
-    if (logic.includes('SUBSTRING') || logic.includes('LEFT') || logic.includes('RIGHT') || logic.includes('MID')) return 'string_replace';
-    if (logic.includes('REPLACE') || logic.includes('STUFF') || logic.includes('TRANSLATE')) return 'string_replace';
-    if (logic.includes('UPPER') || logic.includes('LOWER')) return 'case_conversion';
-    if (logic.includes('CONCAT') || logic.includes('||') || (logic.includes('+') && logic.includes("'"))) return 'concatenation';
-
-    // NULL handling
-    if (logic.includes('ISNULL') || logic.includes('COALESCE') || logic.includes('NULLIF') || logic.includes('NVL')) return 'null_handling';
-
-    // Aggregations
-    if (logic.includes('SUM(') || logic.includes('AVG(') || logic.includes('COUNT(') ||
-        logic.includes('MIN(') || logic.includes('MAX(') || logic.includes('GROUP BY')) return 'aggregation';
-
-    // Type conversions
-    if (logic.includes('CAST') || logic.includes('CONVERT') || logic.includes('TRY_CAST') || logic.includes('TO_NUMBER') || logic.includes('TO_CHAR')) return 'type_casting';
-    if (logic.includes('PARSE') || logic.includes('TRY_PARSE')) return 'type_casting';
-
-    // Business rules (complex logic)
-    if (logic.includes('CASE') || logic.includes('WHEN') || logic.includes('IF') || logic.includes('IIF') || logic.includes('DECODE')) return 'business_rule';
-    if (logic.includes('WHERE') && (logic.includes('AND') || logic.includes('OR'))) return 'business_rule';
-    if (logic.includes('MAP') && logic.includes('TO')) return 'business_rule';
-
-    // Mathematical operations
-    if (logic.match(/[+\-*/]/g) && logic.match(/\d/)) return 'business_rule';
-
-    // Default to unknown if we can't identify but there is content
-    const directKeywords = ['DIRECT', 'SAME', 'AS IS', 'AS-IS', '1:1', '1 TO 1', 'STRAIGHT', 'NONE', 'MATCH', 'COPY', 'NO CHANGE', 'NA', 'N/A', '-'];
-    const isDirectPattern = directKeywords.some(kw => logic.includes(kw));
-
-    if (logic.trim().length > 0 && !isDirectPattern) {
-        return 'unknown';
-    }
-
-    return 'direct_move';
+function detectTransformationType(logic: any): ColumnMapping['transformationType'] {
+    if (!logic) return 'direct_move';
+    const l = String(logic).toUpperCase();
+    if (l.includes('JOIN') || l.includes('LOOKUP')) return 'lookup';
+    if (l.includes('FORMAT') || l.includes('DATE')) return 'date_format';
+    if (l.includes('TRIM')) return 'trim';
+    if (l.includes('REPLACE') || l.includes('STUFF')) return 'string_replace';
+    if (l.includes('UPPER') || l.includes('LOWER')) return 'case_conversion';
+    if (l.includes('CONCAT')) return 'concatenation';
+    if (l.includes('ISNULL') || l.includes('COALESCE')) return 'null_handling';
+    if (l.includes('SUM(') || l.includes('AVG(')) return 'aggregation';
+    if (l.includes('CAST') || l.includes('CONVERT')) return 'type_casting';
+    if (l.includes('CASE') || l.includes('WHEN')) return 'business_rule';
+    return 'unknown';
 }
 
-/**
- * Detect transformation from source value pattern
- */
-function detectTransformationFromValue(value: any): ColumnMapping['transformationType'] {
-    const str = String(value);
-
-    if (str.includes('=') || str.includes('->')) return 'business_rule';
-    if (str.match(/\d{4}-\d{2}-\d{2}/)) return 'date_format';
-
-    return 'direct_move';
-}
-
-/**
- * Assess transformation complexity
- */
-function assessComplexity(transformLogic: any): 'simple' | 'medium' | 'complex' {
-    if (!transformLogic) return 'simple';
-
-    const logic = String(transformLogic);
-    const complexityIndicators = [
-        /CASE.*WHEN/i,
-        /JOIN/i,
-        /SUBQUERY/i,
-        /\(/g // Count parentheses
-    ];
-
+function assessComplexity(logic: any): 'simple' | 'medium' | 'complex' {
+    if (!logic) return 'simple';
+    const l = String(logic);
     let score = 0;
-    complexityIndicators.forEach(pattern => {
-        if (pattern.test(logic)) score++;
-    });
-
-    if (score === 0) return 'simple';
-    if (score <= 2) return 'medium';
-    return 'complex';
+    if (/CASE.*WHEN/i.test(l)) score += 2;
+    if (/JOIN|SELECT/i.test(l)) score += 1;
+    if ((l.match(/\(/g) || []).length > 2) score += 1;
+    return score >= 3 ? 'complex' : score >= 1 ? 'medium' : 'simple';
 }
 
-/**
- * Create empty result structure
- */
 function createEmptyResult(): ParsedMappingSheet {
     return {
-        sourceTables: new Set(),
-        targetTables: new Set(),
-        columnMappings: [],
-        detectedFormat: 'Unknown',
-        transformationRules: [],
-        metadata: {
-            totalRows: 0,
-            detectedColumns: [],
-            formatConfidence: 0
-        }
+        sourceTables: new Set(), targetTables: new Set(), columnMappings: [], detectedFormat: 'Unknown', transformationRules: [],
+        metadata: { totalRows: 0, detectedColumns: [], formatConfidence: 0 }
     };
 }

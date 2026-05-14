@@ -161,8 +161,8 @@ export const AgentScheduledTriggers = ({ projectId }: AgentScheduledTriggersProp
     setIsLoading(true);
     try {
       await Promise.all([loadTriggers(), loadTests(), loadSuites(), loadAgents()]);
-    } catch (error) {
-      console.error("Error loading data:", error);
+    } catch (error: any) {
+      console.error("Error loading data:", JSON.stringify(error) || error.message || error);
       toast({
         title: "Error",
         description: "Failed to load scheduled triggers",
@@ -174,47 +174,67 @@ export const AgentScheduledTriggers = ({ projectId }: AgentScheduledTriggersProp
   };
 
   const loadTriggers = async () => {
-    const { data, error } = await supabase
-      .from("agent_scheduled_triggers")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("agent_scheduled_triggers")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false });
 
-    if (error) throw error;
-    setTriggers((data || []) as ScheduledTrigger[]);
+      if (error) throw error;
+      setTriggers((data || []) as ScheduledTrigger[]);
+    } catch (error: any) {
+      console.error("Error loading triggers:", JSON.stringify(error) || error.message);
+      setTriggers([]);
+    }
   };
 
   const loadTests = async () => {
-    const { data, error } = await supabase
-      .from("nocode_tests")
-      .select("id, name")
-      .eq("project_id", projectId)
-      .order("name");
+    try {
+      const { data, error } = await supabase
+        .from("nocode_tests")
+        .select("id, name")
+        .eq("project_id", projectId)
+        .order("name");
 
-    if (error) throw error;
-    setTests(data || []);
+      if (error) throw error;
+      setTests(data || []);
+    } catch (error: any) {
+      console.error("Error loading tests:", JSON.stringify(error) || error.message);
+      setTests([]);
+    }
   };
 
   const loadSuites = async () => {
-    const { data, error } = await supabase
-      .from("nocode_test_suites")
-      .select("id, name")
-      .eq("project_id", projectId)
-      .order("name");
+    try {
+      const { data, error } = await supabase
+        .from("nocode_test_suites")
+        .select("id, name")
+        .eq("project_id", projectId)
+        .order("name");
 
-    if (error) throw error;
-    setSuites(data || []);
+      if (error) throw error;
+      setSuites(data || []);
+    } catch (error: any) {
+      console.error("Error loading suites:", JSON.stringify(error) || error.message);
+      setSuites([]);
+    }
   };
 
   const loadAgents = async () => {
-    const { data, error } = await supabase
-      .from("self_hosted_agents")
-      .select("id, agent_name, status, last_heartbeat")
-      .eq("project_id", projectId)
-      .order("agent_name");
+    try {
+      const { data, error } = await supabase
+        .from("self_hosted_agents")
+        .select("id, agent_name, status, last_heartbeat")
+        .eq("project_id", projectId)
+        .order("agent_name");
 
-    if (error) throw error;
-    setAgents(data || []);
+      if (error) throw error;
+      setAgents(data || []);
+    } catch (error: any) {
+      console.error("Error loading agents:", JSON.stringify(error) || error.message);
+      setAgents([]);
+    }
   };
 
   const loadExecutions = async (triggerId: string) => {

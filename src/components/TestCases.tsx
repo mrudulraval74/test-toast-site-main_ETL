@@ -281,7 +281,7 @@ export const TestCases = ({
       });
       setTestCases(transformedTestCases);
     } catch (error) {
-      console.error("Error loading data:", error);
+      console.error("Error loading data:", JSON.stringify(error) || error.message || error);
       toast({
         title: "Error",
         description: "Failed to load test cases",
