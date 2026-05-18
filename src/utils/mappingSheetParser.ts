@@ -41,7 +41,9 @@ export interface ParsedMappingSheet {
 
 const PLACEHOLDER_TOKENS = new Set([
     '', '-', '--', 'na', 'n/a', 'none', 'null', 'nil', 'unknown', 'tbd', 'to be decided',
-    'to be confirmed', 'to be determined', 'not applicable', 'none selected'
+    'to be confirmed', 'to be determined', 'not applicable', 'none selected',
+    'constant', 'expression', 'expression/constant', 'generated', 'auto', 'auto-generated',
+    'auto increment', 'identity', 'computed', 'derived', 'calculated', 'static', 'hardcoded'
 ]);
 
 function normalizeToken(value: any): string {
@@ -72,7 +74,14 @@ function resolveCandidateColumn(value: any): string {
     const cleaned = cleanIdentifier(value);
     if (!cleaned) return '';
 
-    // Handle comma-separated columns
+    // If the value is a placeholder token (e.g. 'N/A', 'Constant', 'Generated'), return empty.
+    if (PLACEHOLDER_TOKENS.has(normalizeToken(cleaned))) return '';
+
+    // If value contains a '/' it is a composite token like 'N/A' or 'Expression/Constant'.
+    // Do NOT extract the trailing part — treat the whole thing as empty (no real column).
+    if (cleaned.includes('/')) return '';
+
+    // Handle comma-separated columns (multi-column mappings)
     if (cleaned.includes(',')) {
         return cleaned.split(',').map(s => cleanIdentifier(s)).filter(Boolean).join(', ');
     }
@@ -284,7 +293,10 @@ function parseStandardFormat(data: any[], columns: string[], verticalMetadata: a
         const cleanVal = (val: any) => {
             if (val == null) return null;
             const str = String(val).trim();
-            return (str === '' || str === '-') ? null : str;
+            if (str === '' || str === '-') return null;
+            // Treat N/A-style and placeholder values as null (no data)
+            if (PLACEHOLDER_TOKENS.has(str.toLowerCase().replace(/\s+/g, ' '))) return null;
+            return str;
         };
 
         const sourceValue = sourceCol ? cleanVal(row[sourceCol]) : null;

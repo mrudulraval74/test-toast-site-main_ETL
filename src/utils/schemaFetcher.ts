@@ -119,33 +119,36 @@ export async function fetchDatabaseSchema(connectionId: string, agentId?: string
  * Find a table in schema by fuzzy matching
  */
 export function findTableInSchema(schema: DatabaseSchema, tableName: string): TableInfo | null {
-    const normalizedSearch = tableName.toLowerCase().replace(/[\[\]]/g, '');
+    const clean = (name: string) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedSearch = clean(tableName);
 
-    // Try exact match first
-    for (const table of schema.tables) {
-        if (table.fullName.toLowerCase() === normalizedSearch ||
-            table.tableName.toLowerCase() === normalizedSearch) {
-            return table;
-        }
-    }
+    if (!normalizedSearch) return null;
 
-    // Try partial match
+    // Try exact clean match first on table name
     for (const table of schema.tables) {
-        const tableNameLower = table.tableName.toLowerCase();
-        if (tableNameLower.includes(normalizedSearch) ||
-            normalizedSearch.includes(tableNameLower)) {
+        if (clean(table.tableName) === normalizedSearch || clean(table.fullName) === normalizedSearch) {
             return table;
         }
     }
 
     // Try parts match (e.g. schema.table)
-    if (normalizedSearch.includes('.')) {
-        const parts = normalizedSearch.split('.');
+    const searchLower = tableName.toLowerCase().replace(/[\[\]]/g, '');
+    if (searchLower.includes('.')) {
+        const parts = searchLower.split('.');
         const lastPart = parts[parts.length - 1];
+        const cleanedLastPart = clean(lastPart);
         for (const table of schema.tables) {
-            if (table.tableName.toLowerCase() === lastPart) {
+            if (clean(table.tableName) === cleanedLastPart) {
                 return table;
             }
+        }
+    }
+
+    // Try partial clean match
+    for (const table of schema.tables) {
+        const tableClean = clean(table.tableName);
+        if (tableClean.includes(normalizedSearch) || normalizedSearch.includes(tableClean)) {
+            return table;
         }
     }
 
@@ -156,19 +159,22 @@ export function findTableInSchema(schema: DatabaseSchema, tableName: string): Ta
  * Find a column in table by fuzzy matching
  */
 export function findColumnInTable(table: TableInfo, columnName: string): ColumnInfo | null {
-    const normalizedSearch = columnName.toLowerCase().replace(/[\[\]]/g, '');
+    const clean = (name: string) => String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedSearch = clean(columnName);
 
-    // Try exact match
+    if (!normalizedSearch) return null;
+
+    // Try exact clean match
     for (const col of table.columns) {
-        if (col.name.toLowerCase() === normalizedSearch) {
+        if (clean(col.name) === normalizedSearch) {
             return col;
         }
     }
 
-    // Try partial match
+    // Try partial clean match
     for (const col of table.columns) {
-        if (col.name.toLowerCase().includes(normalizedSearch) ||
-            normalizedSearch.includes(col.name.toLowerCase())) {
+        const colClean = clean(col.name);
+        if (colClean.includes(normalizedSearch) || normalizedSearch.includes(colClean)) {
             return col;
         }
     }

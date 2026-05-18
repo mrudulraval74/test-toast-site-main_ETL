@@ -66,14 +66,35 @@ function isDirectMove(transformationLogic: any): boolean {
 /**
  * Helper to resolve real column name from schema
  */
-function resolveColumnName(schema: DatabaseSchema | null | undefined, tableName: string | undefined, columnName: string): string {
+function resolveColumnName(
+    schema: DatabaseSchema | null | undefined,
+    tableName: string | undefined,
+    columnName: string,
+    sourceColumnFallback?: string
+): string {
     if (!columnName) return '';
     if (!schema || !tableName) return columnName;
 
     const resolveSingle = (name: string) => {
         const table = findTableInSchema(schema, tableName);
         if (!table) return name;
-        const col = findColumnInTable(table, name);
+        
+        // 1. Try to find the target column from Excel in the physical table
+        let col = findColumnInTable(table, name);
+        
+        // 2. Fallback: If not found, check if the source column exists physically in the target table
+        if (!col && sourceColumnFallback && isUsableColumnName(sourceColumnFallback)) {
+            // Split comma separated fallback (e.g. multi-source CONCAT rules)
+            const fallbackParts = sourceColumnFallback.split(',').map(s => s.trim());
+            for (const part of fallbackParts) {
+                const found = findColumnInTable(table, part);
+                if (found) {
+                    col = found;
+                    break;
+                }
+            }
+        }
+        
         return col ? col.name : name;
     };
 
@@ -129,11 +150,25 @@ function isUsableColumnName(columnName: string | undefined | null): boolean {
         'null',
         'none',
         'expression',
-        'expression/constant'
+        'expression/constant',
+        'constant',
+        'generated',
+        'auto',
+        'auto-generated',
+        'identity',
+        'computed',
+        'derived',
+        'calculated',
+        'static',
+        'hardcoded',
+        'tbd',
+        'not applicable'
     ];
 
     if (blocked.includes(normalized)) return false;
     if (/^column[_\s-]?\d+$/i.test(value)) return false;
+    // Block single-character identifiers (like 'A' extracted from 'N/A')
+    if (value.length === 1) return false;
     if (value.includes('[Auto-detected') || value.includes('[Configure')) return false;
     return true;
 }
@@ -415,7 +450,7 @@ export function generateMappingSpecificTests(
         const firstMapped = mappings.find(m => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
         if (firstMapped) {
             const sourceNullCol = quoteSourceColumn(resolveColumnName(sourceSchema, sourceTable, firstMapped.sourceColumn));
-            const targetNullCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMapped.targetColumn));
+            const targetNullCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMapped.targetColumn, firstMapped.sourceColumn));
             testCases.push({
                 name: `${withPhase('3. Null Data Validation')} | ${targetTable}`,
                 description: `Verify null-count parity for mapped column ${firstMapped.sourceColumn} -> ${firstMapped.targetColumn}.`,
@@ -430,7 +465,7 @@ export function generateMappingSpecificTests(
         // 3b. Mapping-Defined Null Validation
         const nonNullableMappings = mappings.filter(m => m.isNullable === false && isUsableColumnName(m.targetColumn));
         nonNullableMappings.forEach(m => {
-            const tCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, m.targetColumn));
+            const tCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, m.targetColumn, m.sourceColumn));
             testCases.push({
                 name: `${withPhase('Validate Mandatory Column')} | ${targetTable}.${m.targetColumn}`,
                 description: `Verify that mandatory column ${m.targetColumn} contains no null values in target.`,
@@ -484,6 +519,13 @@ export function generateMappingSpecificTests(
             pkTgt = [firstValidMap?.targetColumn || ''];
         }
 
+        // Resolve PK column names against the schema to handle camelCase/snake_case mismatches
+        pkSrc = pkSrc.map(k => resolveColumnName(sourceSchema, sourceTable, k));
+        pkTgt = pkTgt.map((k, i) => {
+            const srcCol = pkSrc[i];
+            return resolveColumnName(targetSchema, targetTable, k, srcCol);
+        });
+
         const usablePkSrc = pkSrc.filter(isUsableColumnName);
         const usablePkTgt = pkTgt.filter(isUsableColumnName);
 
@@ -504,7 +546,7 @@ export function generateMappingSpecificTests(
         const firstMappedForValue = mappings.find((m) => isUsableColumnName(m.sourceColumn) && isUsableColumnName(m.targetColumn));
         if (firstMappedForValue) {
             const srcValCol = quoteSourceColumn(resolveColumnName(sourceSchema, sourceTable, firstMappedForValue.sourceColumn));
-            const tgtValCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMappedForValue.targetColumn));
+            const tgtValCol = quoteTargetColumn(resolveColumnName(targetSchema, targetTable, firstMappedForValue.targetColumn, firstMappedForValue.sourceColumn));
             testCases.push({
                 name: `${withPhase('Validate Data Values')} | ${targetTable}`,
                 description: `Validate source and target values for mapped column ${firstMappedForValue.sourceColumn} -> ${firstMappedForValue.targetColumn}.`,
@@ -532,8 +574,25 @@ export function generateMappingSpecificTests(
         mappings.forEach((m, idx) => {
             if (!isUsableColumnName(m.targetColumn)) return;
 
+            // Skip Identity/Generated columns — they have no source equivalent and cannot
+            // be validated in a source-vs-target comparison. These are auto-incremented
+            // PKs or computed values that are ONLY produced by the target database.
+            const logic = String(m.transformationLogic || '').trim().toUpperCase();
+            const isGeneratedColumn = !isUsableColumnName(m.sourceColumn) && (
+                logic === 'IDENTITY' ||
+                logic === 'GENERATED' ||
+                logic === 'COMPUTED' ||
+                logic === 'AUTO' ||
+                logic === 'SERIAL' ||
+                logic === 'AUTOINCREMENT' ||
+                logic === 'AUTO_INCREMENT' ||
+                logic.startsWith('IDENTITY(') ||
+                logic.startsWith('SEQUENCE')
+            );
+            if (isGeneratedColumn) return;
+
             const sCol = resolveColumnName(sourceSchema, sourceTable, m.sourceColumn);
-            const tCol = resolveColumnName(targetSchema, targetTable, m.targetColumn);
+            const tCol = resolveColumnName(targetSchema, targetTable, m.targetColumn, m.sourceColumn);
             const isRule = !isDirectMove(m.transformationLogic);
             const ruleName = isRule ? (detectBusinessRules(m.transformationLogic)[0]?.name || 'Transformation') : 'Direct Move';
             
@@ -554,9 +613,22 @@ export function generateMappingSpecificTests(
 
             const alias = makeSafeAlias(`${m.targetColumn}_val`, usedAliases, 'val');
             const hasSrc = isUsableColumnName(m.sourceColumn);
-            // FIX: Remove 's.' prefix for literals
-            const baseSrc = hasSrc ? `s.${quoteSourceColumn(sCol)}` : "NULL";
-            const srcExpr = isRule 
+
+            // Build base source expression — apply table alias 's.' to EACH column individually
+            // so that multi-column sources like 'FIRST_NAME, LAST_NAME' produce
+            // 's.[FIRST_NAME], s.[LAST_NAME]' (not 's.[FIRST_NAME], [LAST_NAME]').
+            let baseSrc: string;
+            if (!hasSrc) {
+                baseSrc = "NULL";
+            } else if (sCol.includes(',')) {
+                baseSrc = sCol.split(',')
+                    .map(c => `s.${quoteId(normalizeIdentifier(c.trim()), sourceDialect)}`)
+                    .join(', ');
+            } else {
+                baseSrc = `s.${quoteSourceColumn(sCol)}`;
+            }
+
+            const srcExpr = isRule
                 ? buildBusinessRuleExpression(m.transformationLogic, baseSrc)
                 : baseSrc;
 

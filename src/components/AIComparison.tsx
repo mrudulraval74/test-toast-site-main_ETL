@@ -584,27 +584,63 @@ export default function AIComparison() {
                 // QA Standard Format: Extract mappings directly from known column headers
                 for (const sheet of sheetsToAnalyze) {
                     console.log(`Extracting QA Standard format from sheet: ${sheet.name}`);
-                    
+
+                    // --- Step 1: Extract full qualified table names from metadata section (Field | Value rows) ---
+                    let globalSourceTable = '';
+                    let globalTargetTable = '';
+                    for (const row of sheet.data) {
+                        // Look for Field/Value metadata rows at the top of the sheet
+                        const fieldKey = row['Field'] ?? row['field'] ?? row['FIELD'];
+                        const valueKey = row['Value'] ?? row['value'] ?? row['VALUE'];
+                        if (fieldKey == null || valueKey == null) continue;
+                        const field = String(fieldKey).trim().toLowerCase();
+                        const value = String(valueKey).trim();
+                        if (!value) continue;
+                        if (field === 'target table name' || field === 'target table') globalTargetTable = value;
+                        if (field === 'source' || field === 'source table name' || field === 'source table') globalSourceTable = value;
+                    }
+                    console.log(`[QA Format] Metadata tables — Source: "${globalSourceTable}", Target: "${globalTargetTable}"`);
+
+                    // --- Step 2: Parse data rows ---
                     const mappings = sheet.data.filter((row: any) => {
-                        // Filter out empty rows
-                        return row['Target Table Name'] ||
-                            row['Source Table Name'] ||
-                            row['Target Attribute Name'] ||
-                            row['Source Attribute Name'];
-                    }).map((row: any) => ({
-                        sourceColumn: row['Source Attribute Name'] || '',
-                        targetColumn: row['Target Attribute Name'] || '',
-                        sourceTable: row['Source Table Name'] || '',
-                        targetTable: row['Target Table Name'] || '',
-                        transformationType: 'direct_move' as const,
-                        transformationLogic: row['Data Mapping Rule'] || '',
-                        sourceDataType: row['Source Attribute DataType'] || '',
-                        targetDataType: row['Target Attribute DataType'] || '',
-                        notes: row['Notes'] || '',
-                        comments: row['Notes'] || '',
-                        complexity: 'simple' as const,
-                        _sheetName: sheet.name
-                    }));
+                        // Must have at least a target column name — filter out metadata rows and blank rows
+                        const targetAttr = String(row['Target Attribute Name'] ?? '').trim();
+                        const sourceAttr = String(row['Source Attribute Name'] ?? '').trim();
+                        const targetTbl  = String(row['Target Table Name'] ?? '').trim();
+                        const sourceTbl  = String(row['Source Table Name'] ?? '').trim();
+                        // Skip pure metadata rows (e.g. where Target Table Name === 'Target Table Name')
+                        if (targetTbl === 'Target Table Name') return false;
+                        return targetAttr || sourceAttr || targetTbl || sourceTbl;
+                    }).map((row: any) => {
+                        const mappingRule = String(row['Data Mapping Rule'] ?? row['Mapping Rule'] ?? '').trim();
+                        const targetKeyRaw = String(row['Target Key'] ?? row['Key'] ?? '').trim().toUpperCase();
+                        const isNullableRaw = String(row['IsNullable'] ?? row['Is Nullable'] ?? row['Nullable'] ?? '').trim().toLowerCase();
+
+                        // Resolve table names: prefer row-level, fall back to global metadata
+                        const rowSourceTable = String(row['Source Table Name'] ?? '').trim();
+                        const rowTargetTable = String(row['Target Table Name'] ?? '').trim();
+                        const resolvedSourceTable = rowSourceTable || globalSourceTable;
+                        const resolvedTargetTable = rowTargetTable || globalTargetTable;
+
+                        return {
+                            sourceColumn: String(row['Source Attribute Name'] ?? '').trim(),
+                            targetColumn: String(row['Target Attribute Name'] ?? '').trim(),
+                            sourceTable: resolvedSourceTable,
+                            targetTable: resolvedTargetTable,
+                            transformationType: 'direct_move' as const,
+                            transformationLogic: mappingRule,
+                            sourceDataType: String(row['Source Attribute DataType'] ?? row['Source DataType'] ?? '').trim(),
+                            targetDataType: String(row['Target DataType'] ?? row['Target Attribute DataType'] ?? '').trim(),
+                            notes: String(row['Notes'] ?? '').trim(),
+                            comments: String(row['Notes'] ?? '').trim(),
+                            complexity: 'simple' as const,
+                            // PK detection: Target Key = 'PK', 'Y', 'YES', 'TRUE'
+                            isPrimaryKey: targetKeyRaw === 'PK' || targetKeyRaw === 'Y' || targetKeyRaw === 'YES' || targetKeyRaw === 'TRUE' || targetKeyRaw === '1',
+                            // Nullable: IsNullable = 'no', 'false', '0' → not nullable
+                            isNullable: isNullableRaw !== 'no' && isNullableRaw !== 'false' && isNullableRaw !== '0',
+                            _sheetName: sheet.name
+                        };
+                    }).filter((m: any) => m.targetColumn); // must have a target column
 
                     if (mappings.length === 0) {
                         aggregatedErrors.push(`[${sheet.name}] No valid mappings found in QA Standard format.`);
@@ -612,12 +648,12 @@ export default function AIComparison() {
                     }
 
                     aggregatedParsedMappings.push(...mappings);
-                    
-                    // Extract unique tables
-                    mappings.forEach((m: any) => {
-                        if (m.sourceTable) aggregatedSourceTables.add(m.sourceTable);
-                        if (m.targetTable) aggregatedTargetTables.add(m.targetTable);
-                    });
+
+                    // Extract unique tables (prefer global metadata tables, fall back to row-level)
+                    const srcTableForSheet = globalSourceTable || mappings.find((m: any) => m.sourceTable)?.sourceTable || '';
+                    const tgtTableForSheet = globalTargetTable || mappings.find((m: any) => m.targetTable)?.targetTable || '';
+                    if (srcTableForSheet) aggregatedSourceTables.add(srcTableForSheet);
+                    if (tgtTableForSheet) aggregatedTargetTables.add(tgtTableForSheet);
                 }
             } else {
                 // Raw Mapping Format: Use parser to detect and extract mappings
@@ -881,8 +917,14 @@ export default function AIComparison() {
             return "Execution could not be completed. Please try again.";
         }
 
-        if (normalized.includes('not found') || normalized.includes('404')) {
-            return "Result is not available for this run. The job may have expired or the agent may be offline. Please run the test again.";
+        // SQL Server column/object errors — surface the actual message, not a generic one
+        if (
+            normalized.includes('invalid column name') ||
+            normalized.includes('invalid object name') ||
+            normalized.includes('msg 207') ||
+            normalized.includes('msg 208')
+        ) {
+            return `SQL Error: ${raw}`;
         }
 
         if (normalized.includes('network') || normalized.includes('failed to fetch')) {
@@ -898,6 +940,15 @@ export default function AIComparison() {
             normalized.includes('near')
         ) {
             return `SQL syntax error while executing the test query. Details: ${raw}`;
+        }
+
+        // 'not found' / 404 — check if there's a more specific SQL error buried in the message
+        if (normalized.includes('not found') || normalized.includes('404')) {
+            // If the raw error has SQL-specific details, surface them
+            if (normalized.includes('sqlcmd') || normalized.includes('mssql') || normalized.includes('msg ')) {
+                return `Agent SQL Error: ${raw}`;
+            }
+            return "Result is not available for this run. The job may have expired or the agent may be offline. Please run the test again.";
         }
 
         if (context === 'poll') {
