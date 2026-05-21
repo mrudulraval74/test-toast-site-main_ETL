@@ -257,15 +257,25 @@ export function UploadValidationStep({
             for (const sheet of selected) {
                 const parsed = parseMappingSheet(sheet.data);
                 if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
-                    blockingErrors.push(`[${sheet.name}] No valid mappings found. Please verify Source/Target column headers and values.`);
+                    if (selected.length > 1) {
+                        warnings.push(`[${sheet.name}] No valid mappings found. Skipping this sheet.`);
+                    } else {
+                        blockingErrors.push(`[${sheet.name}] No valid mappings found. Please verify Source/Target column headers and values.`);
+                    }
                     continue;
                 }
 
                 const skipped = parsed.metadata?.skippedRows;
                 if (skipped && (skipped.missingSource > 0 || skipped.missingTarget > 0)) {
-                    blockingErrors.push(
-                        `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name.`
-                    );
+                    if (selected.length > 1) {
+                        warnings.push(
+                            `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name. Some rows were skipped.`
+                        );
+                    } else {
+                        blockingErrors.push(
+                            `[${sheet.name}] Missing required cells: ${skipped.missingSource} row(s) missing Source Attribute Name, ${skipped.missingTarget} row(s) missing Target Attribute Name.`
+                        );
+                    }
                 }
                 if (skipped && skipped.placeholder > 0) {
                     warnings.push(`[${sheet.name}] Skipped ${skipped.placeholder} placeholder row(s) (e.g., N/A, -).`);
@@ -273,7 +283,7 @@ export function UploadValidationStep({
 
                 const rows = parsed.columnMappings.map((m: any) => buildQaStandardRows({ ...m, _sheetName: sheet.name }));
                 previewSheets.push({
-                    name: selected.length > 1 ? `QA - ${sheet.name}` : `QA - ${sheet.name}`,
+                    name: `QA - ${sheet.name}`,
                     data: rows
                 });
             }
@@ -289,7 +299,7 @@ export function UploadValidationStep({
             }
 
             if (previewSheets.length === 0 && blockingErrors.length === 0) {
-                setConvertError("No converted output generated. Please verify the mapping sheet structure.");
+                setConvertError("No valid mappings were found in any of the selected sheets. Please verify the sheet structures.");
             }
         } catch (err) {
             console.error('Preview conversion error:', err);

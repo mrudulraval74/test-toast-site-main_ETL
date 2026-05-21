@@ -244,9 +244,10 @@ export function generateMappingSpecificTests(
     pipelineName: string = 'Unknown_Pipeline',
     sourceDbType: string = 'mssql',
     targetDbType: string = 'mssql',
-    promptInstructions: string = ''
+    promptInstructions: string = '',
+    preParsedMappings?: any[] // Pre-parsed column mappings from analyzeMapping — skip re-parsing when provided
 ): MappingAnalysis {
-    if (!mappingData || mappingData.length === 0) {
+    if ((!mappingData || mappingData.length === 0) && (!preParsedMappings || preParsedMappings.length === 0)) {
         return {
             sourceTables: [],
             targetTables: [],
@@ -255,7 +256,24 @@ export function generateMappingSpecificTests(
         };
     }
 
-    const parsed = parseMappingSheet(mappingData);
+    // Use pre-parsed mappings if available (avoids re-parsing raw sheet data which can produce wrong results)
+    let parsed: ReturnType<typeof parseMappingSheet>;
+    if (preParsedMappings && preParsedMappings.length > 0) {
+        console.log(`✅ Using ${preParsedMappings.length} pre-parsed mappings (skipping re-parse)`);
+        const sourceTables = new Set<string>(preParsedMappings.map((m: any) => m.sourceTable).filter(Boolean));
+        const targetTables = new Set<string>(preParsedMappings.map((m: any) => m.targetTable).filter(Boolean));
+        parsed = {
+            columnMappings: preParsedMappings,
+            sourceTables,
+            targetTables,
+            detectedFormat: 'Pre-Parsed',
+            transformationRules: [],
+            testCases: [],
+            metadata: { totalRows: preParsedMappings.length, detectedColumns: [], formatConfidence: 1.0 }
+        };
+    } else {
+        parsed = parseMappingSheet(mappingData);
+    }
     const testCases: TestCase[] = [];
 
     // Default tables if not specified in mapping

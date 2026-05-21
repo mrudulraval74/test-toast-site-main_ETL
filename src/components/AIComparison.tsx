@@ -581,6 +581,8 @@ export default function AIComparison() {
 
             // Handle QA Standard Format vs Raw Mapping Sheet
             if (useQaStandardFormat) {
+                const { normalizeEmbeddedHeaderRows } = await import('@/utils/mappingSheetParser');
+
                 // QA Standard Format: Extract mappings directly from known column headers
                 for (const sheet of sheetsToAnalyze) {
                     console.log(`Extracting QA Standard format from sheet: ${sheet.name}`);
@@ -590,19 +592,22 @@ export default function AIComparison() {
                     let globalTargetTable = '';
                     for (const row of sheet.data) {
                         // Look for Field/Value metadata rows at the top of the sheet
-                        const fieldKey = row['Field'] ?? row['field'] ?? row['FIELD'];
-                        const valueKey = row['Value'] ?? row['value'] ?? row['VALUE'];
-                        if (fieldKey == null || valueKey == null) continue;
-                        const field = String(fieldKey).trim().toLowerCase();
-                        const value = String(valueKey).trim();
+                        const fieldKey = Object.keys(row).find(k => /field|key|attribute/i.test(k));
+                        const valueKey = Object.keys(row).find(k => /value|detail|name/i.test(k));
+                        if (!fieldKey || !valueKey) continue;
+                        const field = String(row[fieldKey] ?? '').trim().toLowerCase();
+                        const value = String(row[valueKey] ?? '').trim();
                         if (!value) continue;
                         if (field === 'target table name' || field === 'target table') globalTargetTable = value;
                         if (field === 'source' || field === 'source table name' || field === 'source table') globalSourceTable = value;
                     }
                     console.log(`[QA Format] Metadata tables — Source: "${globalSourceTable}", Target: "${globalTargetTable}"`);
 
-                    // --- Step 2: Parse data rows ---
-                    const mappings = sheet.data.filter((row: any) => {
+                    // --- Step 2: Normalize the data rows to align with headers ---
+                    const normalizedData = normalizeEmbeddedHeaderRows(sheet.data);
+
+                    // --- Step 3: Parse data rows ---
+                    const mappings = normalizedData.filter((row: any) => {
                         // Must have at least a target column name — filter out metadata rows and blank rows
                         const targetAttr = String(row['Target Attribute Name'] ?? '').trim();
                         const sourceAttr = String(row['Source Attribute Name'] ?? '').trim();
@@ -787,6 +792,16 @@ export default function AIComparison() {
 
             // Generate tests for EACH sheet
             for (const sheet of sheetsForGeneration) {
+                // Use pre-parsed mappings from the analyzeMapping step (analysis.mappings) if available.
+                // Filtering by _sheetName ensures each sheet only uses its own mappings.
+                // This prevents re-parsing raw sheet data which can produce stale/wrong results
+                // (e.g. always generating DimCustomer test cases regardless of the uploaded file).
+                const allAnalyzedMappings = analysis?.mappings ?? [];
+                const sheetPreParsed = allAnalyzedMappings.filter(
+                    (m: any) => !m._sheetName || m._sheetName === sheet.name
+                );
+                const preParsedForSheet = sheetPreParsed.length > 0 ? sheetPreParsed : undefined;
+
                 // 1. Generate mapping-specific tests (column-level)
                 const analyzed = generateMappingSpecificTests(
                     sheet.data,
@@ -795,7 +810,8 @@ export default function AIComparison() {
                     'Unknown_Pipeline',
                     sourceConnections[0]?.type,
                     targetConnection?.type,
-                    promptInstructions
+                    promptInstructions,
+                    preParsedForSheet  // Skip re-parsing when we already have correct mappings
                 );
 
                 // 3. Extract unique table pairs from this sheet (for metadata/row count tagging if needed)

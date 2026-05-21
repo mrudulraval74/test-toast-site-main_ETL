@@ -92,7 +92,7 @@ function resolveCandidateColumn(value: any): string {
     return cleaned;
 }
 
-function normalizeEmbeddedHeaderRows(data: any[]): any[] {
+export function normalizeEmbeddedHeaderRows(data: any[]): any[] {
     if (!data.length) return data;
 
     const firstRow = data[0];
@@ -104,7 +104,8 @@ function normalizeEmbeddedHeaderRows(data: any[]): any[] {
     const headerHints = [
         'target column', 'source column', 'source table', 'source schema',
         'target table', 'target schema', 'transformation', 'business rule',
-        'target data type', 'source data type', 'test case', 'test scenario'
+        'target data type', 'source data type', 'test case', 'test scenario',
+        'target attribute', 'source attribute'
     ];
 
     let headerIndex = -1;
