@@ -392,6 +392,120 @@ export const reportsApi = {
   }
 };
 
+type JobPollingOptions = {
+  intervalMs?: number;
+  maxIntervalMs?: number;
+  timeoutMs?: number;
+  onTick?: (job: any | null, error: string | null) => void | Promise<void>;
+};
+
+type JobPollingResult = {
+  data: any | null;
+  error: string | null;
+  cancelled?: boolean;
+  timedOut?: boolean;
+};
+
+export function pollJobUntilComplete(
+  jobId: string,
+  options: JobPollingOptions = {}
+): { cancel: () => void; promise: Promise<JobPollingResult> } {
+  const intervalMs = options.intervalMs ?? 2500;
+  const maxIntervalMs = options.maxIntervalMs ?? 5000;
+  const timeoutMs = options.timeoutMs ?? 60000;
+
+  let currentInterval = intervalMs;
+  let cancelled = false;
+  let settled = false;
+  let inFlight = false;
+  let timerId: ReturnType<typeof window.setTimeout> | null = null;
+  let timeoutId: ReturnType<typeof window.setTimeout> | null = null;
+  let resolvePromise: ((value: JobPollingResult) => void) | null = null;
+
+  const clearTimers = () => {
+    if (timerId) {
+      window.clearTimeout(timerId);
+      timerId = null;
+    }
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  const finish = (result: JobPollingResult) => {
+    if (settled) return;
+    settled = true;
+    clearTimers();
+    resolvePromise?.(result);
+  };
+
+  const scheduleNext = (delayMs: number) => {
+    if (settled || cancelled) return;
+    timerId = window.setTimeout(() => {
+      void runTick();
+    }, delayMs);
+  };
+
+  const runTick = async () => {
+    if (settled) return;
+    if (cancelled) {
+      finish({ data: null, error: null, cancelled: true });
+      return;
+    }
+    if (inFlight) {
+      scheduleNext(currentInterval);
+      return;
+    }
+
+    inFlight = true;
+    try {
+      const { data, error } = await connectionsApi.getJob(jobId);
+      await options.onTick?.(data ?? null, error ?? null);
+
+      if (cancelled) {
+        finish({ data: null, error: null, cancelled: true });
+        return;
+      }
+
+      if (error || !data) {
+        currentInterval = Math.min(maxIntervalMs, Math.round(currentInterval * 1.5));
+        scheduleNext(currentInterval);
+        return;
+      }
+
+      currentInterval = intervalMs;
+      const status = data.status;
+      if (status === 'completed' || status === 'failed' || status === 'error') {
+        finish({ data, error: null });
+        return;
+      }
+
+      scheduleNext(currentInterval);
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  const promise = new Promise<JobPollingResult>((resolve) => {
+    resolvePromise = resolve;
+    timeoutId = window.setTimeout(() => {
+      finish({ data: null, error: 'timed_out', timedOut: true });
+    }, timeoutMs);
+    void runTick();
+  });
+
+  return {
+    cancel: () => {
+      cancelled = true;
+      if (!settled) {
+        finish({ data: null, error: null, cancelled: true });
+      }
+    },
+    promise,
+  };
+}
+
 // Polling for comparison progress
 export function pollComparisonStatus(
   comparisonId: string,
@@ -399,11 +513,28 @@ export function pollComparisonStatus(
   onError: (error: string) => void,
   onComplete: (results: any) => void
 ): () => void {
-  let intervalId: number | null = null;
   let stopped = false;
+  let inFlight = false;
+  let timeoutId: ReturnType<typeof window.setTimeout> | null = null;
+  let nextDelay = 2000;
+
+  const clearPolling = () => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  const scheduleNext = (delayMs: number) => {
+    if (stopped) return;
+    timeoutId = window.setTimeout(() => {
+      void poll();
+    }, delayMs);
+  };
 
   const poll = async () => {
-    if (stopped) return;
+    if (stopped || inFlight) return;
+    inFlight = true;
 
     try {
       const { data: statusData, error: statusError } = await compareApi.status(comparisonId);
@@ -411,7 +542,6 @@ export function pollComparisonStatus(
       if (statusError) {
         onError(statusError);
         stopped = true;
-        if (intervalId) clearInterval(intervalId);
         return;
       }
 
@@ -420,37 +550,31 @@ export function pollComparisonStatus(
         onProgress(status);
 
         if (status.status === 'completed') {
-          // Fetch full results
-          const { data: results, error: resultsError } = await compareApi.results(comparisonId);
-          if (resultsError) {
-            onError(resultsError);
-          } else if (results) {
-            onComplete(results);
-          }
+          onComplete(status);
           stopped = true;
-          if (intervalId) clearInterval(intervalId);
         } else if (status.status === 'failed') {
-          onError(status.errorMessage || 'Comparison failed');
+          onError(status.error_log || status.errorMessage || 'Comparison failed');
           stopped = true;
-          if (intervalId) clearInterval(intervalId);
+        } else {
+          scheduleNext(nextDelay);
         }
+      } else {
+        nextDelay = Math.min(5000, nextDelay + 500);
+        scheduleNext(nextDelay);
       }
     } catch (error) {
       onError(error instanceof Error ? error.message : 'Polling error');
       stopped = true;
-      if (intervalId) clearInterval(intervalId);
+    } finally {
+      inFlight = false;
     }
   };
 
-  // Start polling immediately, then every 1 second
-  poll();
-  intervalId = window.setInterval(poll, 1000);
+  void poll();
 
   // Return cleanup function
   return () => {
     stopped = true;
-    if (intervalId) {
-      clearInterval(intervalId);
-    }
+    clearPolling();
   };
 }

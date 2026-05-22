@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { DatabaseTree } from '@/components/DatabaseTree';
 import { HelpTooltip } from '@/components/HelpTooltip';
-import { connectionsApi, API_BASE_URL } from '@/lib/api';
+import { connectionsApi, API_BASE_URL, pollJobUntilComplete } from '@/lib/api';
 
 import { useToast } from '@/hooks/use-toast';
 import { getValidationMessage, formatValidationMessage } from '@/lib/validationMessages';
@@ -748,46 +748,50 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
       });
 
       const jobId = data.jobId;
-      const startTime = Date.now();
       const timeout = 30000; // 30s timeout
 
-      const pollInterval = setInterval(async () => {
-        if (Date.now() - startTime > timeout) {
-          clearInterval(pollInterval);
-          setTesting(false);
+      const { promise } = pollJobUntilComplete(jobId, {
+        intervalMs: 2500,
+        maxIntervalMs: 5000,
+        timeoutMs: timeout,
+      });
+      const { data: job, timedOut } = await promise;
+
+      if (timedOut) {
+        setTesting(false);
+        setTestStatus('failed');
+        setTestError('Connection test timed out');
+        toast({ title: 'Connection Failed', description: 'Agent did not respond in time.', variant: 'destructive' });
+        return;
+      }
+
+      if (!job) {
+        setTesting(false);
+        setTestStatus('failed');
+        setTestError('Unable to fetch connection test result');
+        toast({ title: 'Connection Failed', description: 'Unable to fetch connection test result.', variant: 'destructive' });
+        return;
+      }
+
+      setTesting(false);
+      if (job.status === 'completed') {
+        const result = job.result;
+        if (result && result.success) {
+          setTestSuccess(true);
+          setTestStatus('success');
+          toast({ title: 'Connection Successful', description: 'Agent verified the connection!' });
+        } else {
           setTestStatus('failed');
-          setTestError('Connection test timed out');
-          toast({ title: 'Connection Failed', description: 'Agent did not respond in time.', variant: 'destructive' });
-          return;
-        }
-
-        const { data: job, error: jobError } = await connectionsApi.getJob(jobId) as any;
-
-        if (jobError || !job) return; // Retry on next tick
-
-        if (job.status === 'completed') {
-          clearInterval(pollInterval);
-          setTesting(false);
-          const result = job.result;
-          if (result && result.success) {
-            setTestSuccess(true);
-            setTestStatus('success');
-            toast({ title: 'Connection Successful', description: 'Agent verified the connection!' });
-          } else {
-            setTestStatus('failed');
-            const errMsg = result?.error || 'Connection failed';
-            setTestError(errMsg);
-            toast({ title: 'Connection Failed', description: errMsg, variant: 'destructive' });
-          }
-        } else if (job.status === 'failed') {
-          clearInterval(pollInterval);
-          setTesting(false);
-          setTestStatus('failed');
-          const errMsg = job.error_log || 'Job failed';
+          const errMsg = result?.error || 'Connection failed';
           setTestError(errMsg);
           toast({ title: 'Connection Failed', description: errMsg, variant: 'destructive' });
         }
-      }, 2000);
+      } else {
+        setTestStatus('failed');
+        const errMsg = job.error_log || 'Job failed';
+        setTestError(errMsg);
+        toast({ title: 'Connection Failed', description: errMsg, variant: 'destructive' });
+      }
       return;
     }
 
@@ -1286,56 +1290,59 @@ export function ConnectionsPanel({ onConnectionSaved, onConnectionDeleted, initi
         isPollingJob = true;
         setFetchingStatus('Agent is fetching database metadata...');
         const jobId = data.jobId as string;
-        const startTime = Date.now();
-        const timeout = 60000;
+      const { promise } = pollJobUntilComplete(jobId, {
+        intervalMs: 2500,
+        maxIntervalMs: 5000,
+        timeoutMs: 60000,
+      });
+      const { data: job, timedOut } = await promise;
 
-        const pollInterval = setInterval(async () => {
-          if (Date.now() - startTime > timeout) {
-            clearInterval(pollInterval);
-            setLoadingDatabases(false);
-            setFetchingStatus(null);
-            setMetadataError('Metadata fetch timed out');
-            toast({
-              title: 'Fetch Failed',
-              description: 'Agent did not return metadata in time.',
-              variant: 'destructive',
-            });
-            return;
-          }
+      setFetchingStatus(null);
+      setLoadingDatabases(false);
 
-          const { data: job, error: jobError } = await connectionsApi.getJob(jobId) as any;
-          if (jobError || !job) return;
-
-          if (job.status === 'completed') {
-            clearInterval(pollInterval);
-            setFetchingStatus(null);
-            setLoadingDatabases(false);
-            const jobResult = job.result || {};
-            if (jobResult.databases) {
-              setConnectionId(connectionIdToFetch);
-              setDatabaseTree(jobResult.databases);
-              toast({
-                title: 'Databases Fetched',
-                description: 'Metadata retrieved successfully via agent.',
-              });
-            } else {
-              setMetadataError('No databases found in metadata response');
-            }
-          } else if (job.status === 'failed') {
-            clearInterval(pollInterval);
-            setFetchingStatus(null);
-            setLoadingDatabases(false);
-            const msg = job.error_log || 'Metadata fetch failed';
-            setMetadataError(msg);
-            toast({
-              title: 'Fetch Failed',
-              description: msg,
-              variant: 'destructive',
-            });
-          }
-        }, 2000);
+      if (timedOut) {
+        setMetadataError('Metadata fetch timed out');
+        toast({
+          title: 'Fetch Failed',
+          description: 'Agent did not return metadata in time.',
+          variant: 'destructive',
+        });
         return;
       }
+
+      if (!job) {
+        setMetadataError('Unable to fetch metadata result');
+        toast({
+          title: 'Fetch Failed',
+          description: 'Unable to fetch metadata result.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      if (job.status === 'completed') {
+        const jobResult = job.result || {};
+        if (jobResult.databases) {
+          setConnectionId(connectionIdToFetch);
+          setDatabaseTree(jobResult.databases);
+          toast({
+            title: 'Databases Fetched',
+            description: 'Metadata retrieved successfully via agent.',
+          });
+        } else {
+          setMetadataError('No databases found in metadata response');
+        }
+      } else {
+        const msg = job.error_log || 'Metadata fetch failed';
+        setMetadataError(msg);
+        toast({
+          title: 'Fetch Failed',
+          description: msg,
+          variant: 'destructive',
+        });
+      }
+      return;
+    }
 
       // Handle Direct Sync Result
       if (data && data.databases) {

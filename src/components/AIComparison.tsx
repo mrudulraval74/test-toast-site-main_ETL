@@ -267,14 +267,30 @@ export default function AIComparison() {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [selectedAgentId, setSelectedAgentId] = useState<string>("");
     const [loadingAgents, setLoadingAgents] = useState(false);
+    const agentFetchInFlightRef = useRef(false);
+    const pendingAgentRefreshRef = useRef(false);
+    const lastAgentFetchAtRef = useRef(0);
 
-    const fetchAgents = useCallback(async (options?: { silent?: boolean }) => {
+    const fetchAgents = useCallback(async (options?: { silent?: boolean; force?: boolean }) => {
         const silent = options?.silent ?? false;
+        const force = options?.force ?? false;
+        const now = Date.now();
+
+        if (agentFetchInFlightRef.current) {
+            pendingAgentRefreshRef.current = true;
+            return;
+        }
+
+        if (!force && silent && now - lastAgentFetchAtRef.current < 5000) {
+            return;
+        }
+
+        agentFetchInFlightRef.current = true;
         setLoadingAgents(true);
         try {
             const { data, error } = await supabase
                 .from('self_hosted_agents')
-                .select('*')
+                .select('id, agent_name, status, last_heartbeat, running_jobs, capacity, project_id, agent_type')
                 // .eq('agent_type', 'etl') // Removed strict filter to allow general agents
                 .order('status', { ascending: false }); // Online first
 
@@ -298,7 +314,16 @@ export default function AIComparison() {
                 toast({ title: "Agent Error", description: "Failed to load ETL agents", variant: "destructive" });
             }
         } finally {
+            agentFetchInFlightRef.current = false;
+            lastAgentFetchAtRef.current = Date.now();
             setLoadingAgents(false);
+
+            if (pendingAgentRefreshRef.current) {
+                pendingAgentRefreshRef.current = false;
+                window.setTimeout(() => {
+                    void fetchAgents({ silent: true, force: true });
+                }, 500);
+            }
         }
     }, [toast]);
 
@@ -1302,22 +1327,30 @@ export default function AIComparison() {
             }
 
             return await new Promise<'pass' | 'fail' | 'skipped'>((resolve) => {
-                let pollInterval: ReturnType<typeof setInterval> | null = null;
+                let pollTimeoutId: ReturnType<typeof window.setTimeout> | null = null;
                 let timeoutId: ReturnType<typeof setTimeout> | null = null;
                 let resolved = false;
                 let notFoundPollErrors = 0;
                 let transientPollErrors = 0;
                 let terminalStateProcessing = false;
+                let pollInFlight = false;
 
                 const clearTracking = () => {
-                    if (pollInterval) {
-                        clearInterval(pollInterval);
-                        pollInterval = null;
+                    if (pollTimeoutId) {
+                        window.clearTimeout(pollTimeoutId);
+                        pollTimeoutId = null;
                     }
                     if (timeoutId) {
                         clearTimeout(timeoutId);
                         timeoutId = null;
                     }
+                };
+
+                const scheduleNextPoll = (delayMs = 2000) => {
+                    if (resolved) return;
+                    pollTimeoutId = window.setTimeout(() => {
+                        void runPoll();
+                    }, delayMs);
                 };
 
                 const cancelActiveExecution = () => {
@@ -1355,45 +1388,89 @@ export default function AIComparison() {
                     resolve(status);
                 };
 
-                pollInterval = setInterval(async () => {
-                    if (resolved || terminalStateProcessing) return;
-                    const { data: statusData, error: statusError } = await compareApi.status(jobId);
+                const runPoll = async () => {
+                    if (resolved || terminalStateProcessing || pollInFlight) return;
+                    pollInFlight = true;
 
-                    if (statusError) {
-                        const rawErr = String(statusError || '');
-                        if (rawErr.toLowerCase().includes('not found') && notFoundPollErrors < 3) {
-                            notFoundPollErrors += 1;
+                    try {
+                        const { data: statusData, error: statusError } = await compareApi.status(jobId);
+
+                        if (statusError) {
+                            const rawErr = String(statusError || '');
+                            if (rawErr.toLowerCase().includes('not found') && notFoundPollErrors < 3) {
+                                notFoundPollErrors += 1;
+                                scheduleNextPoll();
+                                return;
+                            }
+                            if (transientPollErrors < 5) {
+                                transientPollErrors += 1;
+                                scheduleNextPoll(3000);
+                                return;
+                            }
+
+                            // Edge Function polling can briefly fail while the agent is still
+                            // submitting its terminal result. Query the queue table directly so
+                            // Actual Result shows the agent/SQL error instead of a generic
+                            // network message whenever possible.
+                            const { data: fallbackJob } = await supabase
+                                .from('agent_job_queue' as any)
+                                .select('status, result, error_log')
+                                .eq('id', jobId)
+                                .maybeSingle();
+
+                            if (fallbackJob?.status === 'failed' || fallbackJob?.status === 'error') {
+                                finalize(
+                                    'fail',
+                                    fallbackJob.error_log
+                                        ? formatExecutionErrorMessage(fallbackJob.error_log, 'execution')
+                                        : "Execution failed before comparison result was produced."
+                                );
+                                return;
+                            }
+
+                            if (fallbackJob?.status === 'completed') {
+                                const result = fallbackJob.result || {};
+                                const success = evaluateComparisonSuccess(result);
+                                finalize(success ? 'pass' : 'fail', buildActualResultMessage(result, success), {
+                                    sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
+                                    targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
+                                    sourceData: result.source_data || [],
+                                    targetData: result.target_data || [],
+                                    comparisonData: result.comparison_rows || [],
+                                    compareColumns: result.compareColumns || [],
+                                    comparisonType: testCase.category || 'general',
+                                    mismatchData: buildMismatchReportRows(result)
+                                });
+                                return;
+                            }
+
+                            finalize('fail', formatExecutionErrorMessage(statusError, 'poll'));
                             return;
                         }
-                        if (transientPollErrors < 5) {
-                            transientPollErrors += 1;
-                            return;
-                        }
 
-                        // Edge Function polling can briefly fail while the agent is still
-                        // submitting its terminal result. Query the queue table directly so
-                        // Actual Result shows the agent/SQL error instead of a generic
-                        // network message whenever possible.
-                        const { data: fallbackJob } = await supabase
-                            .from('agent_job_queue' as any)
-                            .select('status, result, error_log')
-                            .eq('id', jobId)
-                            .maybeSingle();
+                        transientPollErrors = 0;
 
-                        if (fallbackJob?.status === 'failed' || fallbackJob?.status === 'error') {
-                            finalize(
-                                'fail',
-                                fallbackJob.error_log
-                                    ? formatExecutionErrorMessage(fallbackJob.error_log, 'execution')
-                                    : "Execution failed before comparison result was produced."
-                            );
-                            return;
-                        }
+                        const jobStatus = statusData?.status;
+                        const resultPayload = statusData?.result || {};
+                        const errorText = statusData?.error_log || statusData?.error || resultPayload?.error;
+                        const summary = resultPayload?.summary || {};
+                        const mismatches = Array.isArray(resultPayload?.mismatches)
+                            ? resultPayload.mismatches
+                            : [];
+                        console.log("Job Status:", jobStatus);
 
-                        if (fallbackJob?.status === 'completed') {
-                            const result = fallbackJob.result || {};
+                        if (jobStatus === 'completed') {
+                            terminalStateProcessing = true;
+                            // Always fetch final result payload to prefer full mismatch rows over sampled status payload.
+                            let result = resultPayload || {};
+                            const { data: resultData } = await compareApi.results(jobId);
+                            result = resultData?.result || resultPayload || {};
+
                             const success = evaluateComparisonSuccess(result);
-                            finalize(success ? 'pass' : 'fail', buildActualResultMessage(result, success), {
+                            const message = buildActualResultMessage(result, success);
+
+                            const mismatchReportRows = buildMismatchReportRows(result);
+                            const details = {
                                 sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
                                 targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
                                 sourceData: result.source_data || [],
@@ -1401,84 +1478,54 @@ export default function AIComparison() {
                                 comparisonData: result.comparison_rows || [],
                                 compareColumns: result.compareColumns || [],
                                 comparisonType: testCase.category || 'general',
-                                mismatchData: buildMismatchReportRows(result)
+                                mismatchData: mismatchReportRows
+                            };
+
+                            finalize(success ? 'pass' : 'fail', message, details);
+                            notifyPerTest({
+                                title: "Execution Completed",
+                                description: `${success ? 'Pass' : 'Fail'}: ${message}`,
+                                variant: success ? "default" : "destructive"
                             });
                             return;
                         }
 
-                        finalize('fail', formatExecutionErrorMessage(statusError, 'poll'));
-                        return;
-                    }
+                        if (jobStatus === 'failed' || jobStatus === 'error') {
+                            terminalStateProcessing = true;
+                            // Some ETL mismatches are persisted as failed with valid comparison summary.
+                            if (summary && (typeof summary?.mismatchedRows === 'number' || mismatches.length > 0)) {
+                                // Try to fetch full result for failed comparisons as well.
+                                const { data: failedResultData } = await compareApi.results(jobId);
+                                const failedResult = failedResultData?.result || resultPayload || {};
+                                const fullMismatches = buildMismatchReportRows(failedResult);
+                                const message = buildActualResultMessage(failedResult, false);
+                                finalize('fail', message, {
+                                    sourceCount: failedResult?.summary?.sourceRowCount ?? summary?.sourceRowCount ?? 0,
+                                    targetCount: failedResult?.summary?.targetRowCount ?? summary?.targetRowCount ?? 0,
+                                    sourceData: failedResult?.source_data || resultPayload?.source_data || [],
+                                    targetData: failedResult?.target_data || resultPayload?.target_data || [],
+                                    comparisonData: failedResult?.comparison_rows || resultPayload?.comparison_rows || [],
+                                    compareColumns: failedResult?.compareColumns || resultPayload?.compareColumns || [],
+                                    comparisonType: testCase.category || 'general',
+                                    mismatchData: fullMismatches
+                                });
+                                notifyPerTest({ title: "Mismatch Detected", description: message, variant: "destructive" });
+                                return;
+                            }
 
-                    transientPollErrors = 0;
-
-                    const jobStatus = statusData?.status;
-                    const resultPayload = statusData?.result || {};
-                    const errorText = statusData?.error_log || statusData?.error || resultPayload?.error;
-                    const summary = resultPayload?.summary || {};
-                    const mismatches = Array.isArray(resultPayload?.mismatches)
-                        ? resultPayload.mismatches
-                        : [];
-                    console.log("Job Status:", jobStatus);
-
-                    if (jobStatus === 'completed') {
-                        terminalStateProcessing = true;
-                        // Always fetch final result payload to prefer full mismatch rows over sampled status payload.
-                        let result = resultPayload || {};
-                        const { data: resultData } = await compareApi.results(jobId);
-                        result = resultData?.result || resultPayload || {};
-
-                        const success = evaluateComparisonSuccess(result);
-                        const message = buildActualResultMessage(result, success);
-
-                        const mismatchReportRows = buildMismatchReportRows(result);
-                        const details = {
-                            sourceCount: result?.summary?.sourceRowCount ?? result?.source_count ?? 0,
-                            targetCount: result?.summary?.targetRowCount ?? result?.target_count ?? 0,
-                            sourceData: result.source_data || [],
-                            targetData: result.target_data || [],
-                            comparisonData: result.comparison_rows || [],
-                            compareColumns: result.compareColumns || [],
-                            comparisonType: testCase.category || 'general',
-                            mismatchData: mismatchReportRows
-                        };
-
-                        finalize(success ? 'pass' : 'fail', message, details);
-                        notifyPerTest({
-                            title: "Execution Completed",
-                            description: `${success ? 'Pass' : 'Fail'}: ${message}`,
-                            variant: success ? "default" : "destructive"
-                        });
-                    } else if (jobStatus === 'failed' || jobStatus === 'error') {
-                        terminalStateProcessing = true;
-                        // Some ETL mismatches are persisted as failed with valid comparison summary.
-                        if (summary && (typeof summary?.mismatchedRows === 'number' || mismatches.length > 0)) {
-                            // Try to fetch full result for failed comparisons as well.
-                            const { data: failedResultData } = await compareApi.results(jobId);
-                            const failedResult = failedResultData?.result || resultPayload || {};
-                            const fullMismatches = buildMismatchReportRows(failedResult);
-                            const message = buildActualResultMessage(failedResult, false);
-                            finalize('fail', message, {
-                                sourceCount: failedResult?.summary?.sourceRowCount ?? summary?.sourceRowCount ?? 0,
-                                targetCount: failedResult?.summary?.targetRowCount ?? summary?.targetRowCount ?? 0,
-                                sourceData: failedResult?.source_data || resultPayload?.source_data || [],
-                                targetData: failedResult?.target_data || resultPayload?.target_data || [],
-                                comparisonData: failedResult?.comparison_rows || resultPayload?.comparison_rows || [],
-                                compareColumns: failedResult?.compareColumns || resultPayload?.compareColumns || [],
-                                comparisonType: testCase.category || 'general',
-                                mismatchData: fullMismatches
-                            });
-                            notifyPerTest({ title: "Mismatch Detected", description: message, variant: "destructive" });
+                            const errorMsg = errorText
+                                ? formatExecutionErrorMessage(errorText, 'execution')
+                                : "Execution failed before comparison result was produced.";
+                            finalize('fail', errorMsg);
+                            notifyPerTest({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
                             return;
                         }
 
-                        const errorMsg = errorText
-                            ? formatExecutionErrorMessage(errorText, 'execution')
-                            : "Execution failed before comparison result was produced.";
-                        finalize('fail', errorMsg);
-                        notifyPerTest({ title: "Execution Failed", description: errorMsg, variant: "destructive" });
+                        scheduleNextPoll();
+                    } finally {
+                        pollInFlight = false;
                     }
-                }, 1000); // Poll every 1 second for faster status updates
+                };
 
                 // Timeout after 5 minutes. SQL Server comparisons can take longer
                 // than simple API calls, especially through the self-hosted agent.
@@ -1525,6 +1572,8 @@ export default function AIComparison() {
                             : "Execution timed out while waiting for agent response. Please retry."
                     );
                 }, 300000);
+
+                void runPoll();
             });
 
         } catch (error) {

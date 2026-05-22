@@ -1,6 +1,6 @@
 // Database Schema Fetcher
 // Fetches and caches database schemas for intelligent SQL generation
-import { connectionsApi } from '@/lib/api';
+import { connectionsApi, pollJobUntilComplete } from '@/lib/api';
 
 export interface ColumnInfo {
     name: string;
@@ -48,19 +48,25 @@ export async function fetchDatabaseSchema(connectionId: string, agentId?: string
         let metadata: any = data;
         if (data?.jobId) {
             const jobId = data.jobId as string;
-            const timeoutMs = 60000;
-            const start = Date.now();
-            while (Date.now() - start < timeoutMs) {
-                await new Promise((r) => setTimeout(r, 1500));
-                const { data: job, error: jobError } = await connectionsApi.getJob(jobId);
-                if (jobError || !job) continue;
-                if ((job as any).status === 'completed') {
-                    metadata = (job as any).result || {};
-                    break;
-                }
-                if ((job as any).status === 'failed') {
-                    throw new Error((job as any).error_log || 'Metadata job failed');
-                }
+            const { promise } = pollJobUntilComplete(jobId, {
+                intervalMs: 2500,
+                maxIntervalMs: 5000,
+                timeoutMs: 60000,
+            });
+            const { data: job, timedOut } = await promise;
+
+            if (timedOut) {
+                throw new Error('Metadata job timed out');
+            }
+
+            if (!job) {
+                throw new Error('Metadata job did not return a result');
+            }
+
+            if ((job as any).status === 'completed') {
+                metadata = (job as any).result || {};
+            } else {
+                throw new Error((job as any).error_log || 'Metadata job failed');
             }
         }
 
