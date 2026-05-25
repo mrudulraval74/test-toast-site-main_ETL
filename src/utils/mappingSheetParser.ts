@@ -77,18 +77,8 @@ function resolveCandidateColumn(value: any): string {
     // If the value is a placeholder token (e.g. 'N/A', 'Constant', 'Generated'), return empty.
     if (PLACEHOLDER_TOKENS.has(normalizeToken(cleaned))) return '';
 
-    // If value contains a '/' it is a composite token like 'N/A' or 'Expression/Constant'.
-    // Do NOT extract the trailing part — treat the whole thing as empty (no real column).
-    if (cleaned.includes('/')) return '';
-
-    // Handle comma-separated columns (multi-column mappings)
-    if (cleaned.includes(',')) {
-        return cleaned.split(',').map(s => cleanIdentifier(s)).filter(Boolean).join(', ');
-    }
-
-    // Extract trailing identifier from `db.schema.table.column` / `table.column`
-    const direct = cleaned.match(/([a-zA-Z_][a-zA-Z0-9_]*)(\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*))?$/);
-    if (direct) return cleanIdentifier(direct[3] || direct[1]);
+    // We used to drop values with '/' or do regex extraction here, but that causes us 
+    // to drop valid mapping rows. Let's just trust the data the user provided in the sheet.
     return cleaned;
 }
 
@@ -160,33 +150,61 @@ export function normalizeEmbeddedHeaderRows(data: any[]): any[] {
 }
 
 export function parseMappingSheet(data: any[]): ParsedMappingSheet {
-    if (!data || data.length === 0) return createEmptyResult();
+    if (!data || data.length === 0) {
+        console.log('[parseMappingSheet] Empty data, returning empty result');
+        return createEmptyResult();
+    }
+
+    console.log(`[parseMappingSheet] Input: ${data.length} rows`);
+    if (data.length > 0) {
+        const sampleKeys = Object.keys(data[0] || {});
+        console.log('[parseMappingSheet] Original column headers:', sampleKeys);
+        if (data.length > 0) {
+            console.log('[parseMappingSheet] First row:', JSON.stringify(data[0]).slice(0, 500));
+        }
+    }
 
     const normalizedData = normalizeEmbeddedHeaderRows(data);
-    if (normalizedData.length === 0) return createEmptyResult();
+    if (normalizedData.length === 0) {
+        console.log('[parseMappingSheet] normalizeEmbeddedHeaderRows returned empty');
+        return createEmptyResult();
+    }
+
+    if (normalizedData !== data && normalizedData.length > 0) {
+        const normalizedKeys = Object.keys(normalizedData[0] || {});
+        console.log('[parseMappingSheet] Normalized column headers:', normalizedKeys);
+        console.log('[parseMappingSheet] Normalized first row:', JSON.stringify(normalizedData[0]).slice(0, 500));
+    }
 
     let headerRowIdx = 0;
-    let maxKeywordCount = 0;
-    const searchLimit = Math.min(normalizedData.length, 15);
-    const etlKeywords = [
-        'source', 'target', 'transformation', 'mapping', 'logic', 'rule', 'field', 'column',
-        'src', 'tgt', 'business', 'rule', 'extraction', 'loading', 'metadata', 'comment'
-    ];
 
-    for (let i = 0; i < searchLimit; i++) {
-        const row = normalizedData[i];
-        if (!row) continue;
-        const rowKeys = Object.keys(row);
-        const rowValues = Object.values(row).map(v => String(v || '').toLowerCase());
-        let keywordCount = 0;
-        rowKeys.forEach(k => { if (etlKeywords.some(kw => k.toLowerCase().includes(kw))) keywordCount++; });
-        rowValues.forEach(v => { if (etlKeywords.some(kw => v.includes(kw))) keywordCount += 2; });
-        if (keywordCount > maxKeywordCount) { maxKeywordCount = keywordCount; headerRowIdx = i; }
+    // Only search for a header row if normalizeEmbeddedHeaderRows didn't already extract one.
+    // If it extracted one, normalizedData !== data, and the first row is already a data row.
+    if (normalizedData === data) {
+        let maxKeywordCount = 0;
+        const searchLimit = Math.min(normalizedData.length, 15);
+        const etlKeywords = [
+            'source', 'target', 'transformation', 'mapping', 'logic', 'rule', 'field', 'column',
+            'src', 'tgt', 'business', 'rule', 'extraction', 'loading', 'metadata', 'comment',
+            'attribute', 'table name', 'data type', 'datatype'
+        ];
+
+        for (let i = 0; i < searchLimit; i++) {
+            const row = normalizedData[i];
+            if (!row) continue;
+            const rowKeys = Object.keys(row);
+            const rowValues = Object.values(row).map(v => String(v || '').toLowerCase());
+            let keywordCount = 0;
+            rowKeys.forEach(k => { if (etlKeywords.some(kw => k.toLowerCase().includes(kw))) keywordCount++; });
+            rowValues.forEach(v => { if (etlKeywords.some(kw => v.includes(kw))) keywordCount += 2; });
+            if (keywordCount > maxKeywordCount) { maxKeywordCount = keywordCount; headerRowIdx = i; }
+        }
     }
 
     const effectiveData = normalizedData.slice(headerRowIdx);
     if (effectiveData.length === 0) return createEmptyResult();
     const columnNames = Object.keys(effectiveData[0]);
+    console.log(`[parseMappingSheet] Effective data: ${effectiveData.length} rows, headerRowIdx=${headerRowIdx}, columns:`, columnNames);
 
     // Check for Vertical Metadata (Field | Value) at the very top
     const metadata: any = {};
@@ -217,12 +235,21 @@ export function parseMappingSheet(data: any[]): ParsedMappingSheet {
 
     for (const strategy of strategies) {
         const result = strategy(effectiveData, columnNames, metadata);
-        if (result && result.metadata.formatConfidence > highestConfidence) {
-            highestConfidence = result.metadata.formatConfidence;
-            bestResult = result;
+        if (result) {
+            const mappingsCount = result.columnMappings?.length || 0;
+            console.log(`[parseMappingSheet] Strategy ${strategy.name}: confidence=${result.metadata.formatConfidence.toFixed(2)}, mappings=${mappingsCount}`);
+            
+            // If the strategy found 0 mappings, heavily penalize its confidence so a fallback can win
+            const effectiveConfidence = mappingsCount > 0 ? result.metadata.formatConfidence : result.metadata.formatConfidence * 0.01;
+
+            if (effectiveConfidence > highestConfidence) {
+                highestConfidence = effectiveConfidence;
+                bestResult = result;
+            }
         }
     }
 
+    console.log(`[parseMappingSheet] Best result: format=${bestResult?.detectedFormat || 'none'}, confidence=${highestConfidence.toFixed(2)}, mappings=${bestResult?.columnMappings?.length || 0}`);
     return bestResult || createEmptyResult();
 }
 
@@ -249,22 +276,58 @@ function parseStandardFormat(data: any[], columns: string[], verticalMetadata: a
         return maxScore > 0.3 ? bestCol : null;
     };
 
-    const sourceCol = findBestColumn(['source', 'src', 'from', 'source field', 'source column', 'source_column', 'source_field', 'source_col', 'src_field', 'source_name', 'source attribute', 'source_attribute', 'input field', 'legacy column', 'old column']);
-    const targetCol = findBestColumn(['target', 'tgt', 'to', 'dest', 'destination', 'target field', 'target column', 'target_column', 'target_field', 'target_col', 'tgt_field', 'target_name', 'target attribute', 'target_attribute', 'output field', 'warehouse column', 'new column']);
-    const transformCol = findBestColumn(['transformation', 'transform', 'rule', 'logic', 'formula', 'business rule', 'mapping logic', 'transformation_logic', 'syntax', 'description', 'rule description', 'logic description', 'transformation_rule', 'mapping_rule', 'business_logic']);
-    const srcTableCol = findBestColumn(['source table', 'src table', 'src_table', 'source_table', 'source entity', 'source_entity', 'src entity', 'src_entity', 'source system', 'src system']);
-    const tgtTableCol = findBestColumn(['target table', 'tgt table', 'tgt_table', 'target_table', 'target entity', 'target_entity', 'tgt entity', 'tgt_entity', 'target system', 'tgt system']);
+    const sourceCol = findBestColumn([
+        'source', 'src', 'from', 'source field', 'source column', 'source_column',
+        'source_field', 'source_col', 'src_field', 'source_name', 'source attribute',
+        'source_attribute', 'input field', 'legacy column', 'old column',
+        'source column name', 'source field name', 'source attribute name',
+        'src column', 'src col name', 'src attribute name', 'src_column_name',
+        'source_column_name', 'source_attr', 'src_attr',
+    ]);
+    const targetCol = findBestColumn([
+        'target', 'tgt', 'to', 'dest', 'destination', 'target field', 'target column',
+        'target_column', 'target_field', 'target_col', 'tgt_field', 'target_name',
+        'target attribute', 'target_attribute', 'output field', 'warehouse column',
+        'new column', 'target column name', 'target field name', 'target attribute name',
+        'tgt column', 'tgt col name', 'tgt attribute name', 'tgt_column_name',
+        'target_column_name', 'target_attr', 'tgt_attr',
+    ]);
+    const transformCol = findBestColumn([
+        'transformation', 'transform', 'rule', 'logic', 'formula', 'business rule',
+        'mapping logic', 'transformation_logic', 'syntax', 'description',
+        'rule description', 'logic description', 'transformation_rule', 'mapping_rule',
+        'business_logic', 'data mapping rule', 'mapping rule', 'conversion logic',
+        'etl logic', 'etl rule',
+    ]);
+    const srcTableCol = findBestColumn([
+        'source table', 'src table', 'src_table', 'source_table', 'source entity',
+        'source_entity', 'src entity', 'src_entity', 'source system', 'src system',
+        'source table name', 'src table name', 'source_table_name', 'src_table_name',
+    ]);
+    const tgtTableCol = findBestColumn([
+        'target table', 'tgt table', 'tgt_table', 'target_table', 'target entity',
+        'target_entity', 'tgt entity', 'tgt_entity', 'target system', 'tgt system',
+        'target table name', 'tgt table name', 'target_table_name', 'tgt_table_name',
+    ]);
     const srcSchemaCol = findBestColumn(['source schema', 'src_schema', 'source_schema', 'source_db_schema']);
     const tgtSchemaCol = findBestColumn(['target schema', 'tgt_schema', 'target_schema', 'target_db_schema']);
     const srcDbCol = findBestColumn(['source database', 'src_db', 'source_db', 'source_database_name']);
     const tgtDbCol = findBestColumn(['target database', 'tgt_db', 'target_db', 'target_database_name']);
-    const srcDataTypeCol = findBestColumn(['source data type', 'source datatype', 'src datatype', 'source_type', 'source format', 'input type']);
-    const tgtDataTypeCol = findBestColumn(['target data type', 'target datatype', 'tgt datatype', 'target_type', 'target format', 'output type']);
-    const pkCol = findBestColumn(['primary key', 'pk', 'key', 'is key', 'is_key', 'unique key', 'identifier']);
-    const nullCol = findBestColumn(['is nullable', 'nullable', 'null', 'allow null', 'is_nullable', 'optional']);
+    const srcDataTypeCol = findBestColumn([
+        'source data type', 'source datatype', 'src datatype', 'source_type',
+        'source format', 'input type', 'source attribute datatype', 'src data type',
+        'source_datatype', 'src_datatype',
+    ]);
+    const tgtDataTypeCol = findBestColumn([
+        'target data type', 'target datatype', 'tgt datatype', 'target_type',
+        'target format', 'output type', 'target attribute datatype', 'tgt data type',
+        'target_datatype', 'tgt_datatype',
+    ]);
+    const pkCol = findBestColumn(['primary key', 'pk', 'key', 'is key', 'is_key', 'unique key', 'identifier', 'target key', 'source key']);
+    const nullCol = findBestColumn(['is nullable', 'nullable', 'null', 'allow null', 'is_nullable', 'optional', 'target isnullable', 'source isnullable']);
     const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description', 'business_notes', 'mapping_notes']);
 
-
+    console.log('[parseStandardFormat] Detected columns:', { sourceCol, targetCol, transformCol, srcTableCol, tgtTableCol });
 
     const confidence = (sourceCol ? 0.4 : 0) + (targetCol ? 0.4 : 0) + (transformCol ? 0.2 : 0) + (srcTableCol ? 0.1 : 0);
     if (confidence < 0.25) return null; // Lowered threshold to be more inclusive of sparse sheets
@@ -459,10 +522,9 @@ function parseVerticalFormat(data: any[], columns: string[], verticalMetadata: a
 }
 
 function parseGenericFormat(data: any[], columns: string[], verticalMetadata: any = {}): ParsedMappingSheet | null {
-    return {
-        sourceTables: new Set(), targetTables: new Set(), columnMappings: [], detectedFormat: 'Generic', transformationRules: [],
-        metadata: { totalRows: data.length, detectedColumns: columns, formatConfidence: 0.05 }
-    };
+    // The user explicitly requested NOT to provide generic fallback answers.
+    // If we can't detect standard column mappings, we should fail and let the user correct their sheet.
+    return null;
 }
 
 function findColumn(columns: string[], keywords: string[]): string | null {

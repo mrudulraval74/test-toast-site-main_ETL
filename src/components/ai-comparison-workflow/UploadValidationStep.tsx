@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import { useToast } from '@/hooks/use-toast';
 import { Upload, FileSpreadsheet, Loader2, ShieldCheck, CheckCircle, AlertTriangle, XCircle, Download, Copy, Database, Layers, Plus, AlertCircle, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -106,6 +107,7 @@ export function UploadValidationStep({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const [isPromptExpanded, setIsPromptExpanded] = useState(!!promptInstructions);
     const recognizedKeywords = useMemo(() => getRecognizedKeywords(promptInstructions), [promptInstructions]);
+    const { toast } = useToast();
 
     const handleAddSource = () => {
         onSourceConnectionsChange([...sourceConnections, { id: null, name: 'None' }]);
@@ -161,6 +163,20 @@ export function UploadValidationStep({
         setPreviewSheetName('');
         setConvertError(null);
         setConvertWarning(null);
+    };
+
+    const resetConvertDialogState = () => {
+        setConvertFileName('');
+        setConvertSheets([]);
+        setConvertSelectedSheetNames([]);
+        clearConvertedPreview();
+        setIsConverting(false);
+        if (convertFileInputRef.current) convertFileInputRef.current.value = '';
+    };
+
+    const handleConvertDialogOpenChange = (open: boolean) => {
+        if (!open) resetConvertDialogState();
+        setShowConvertDialog(open);
     };
 
     const handleConvertFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -237,13 +253,26 @@ export function UploadValidationStep({
     });
 
     const handleGenerateConvertedPreview = async () => {
-        if (!showConvertDialog) return;
+        console.log('[Convert Preview] handleGenerateConvertedPreview called', {
+            showConvertDialog,
+            convertSheetsCount: convertSheets.length,
+            convertSelectedSheetNames,
+        });
+
+        if (!showConvertDialog) {
+            console.warn('[Convert Preview] Dialog not open, aborting.');
+            return;
+        }
         if (convertSheets.length === 0) {
-            setConvertError("Upload a mapping sheet to start conversion.");
+            const msg = "Upload a mapping sheet to start conversion.";
+            setConvertError(msg);
+            toast({ title: "Conversion Error", description: msg, variant: "destructive" });
             return;
         }
         if (convertSelectedSheetNames.length === 0) {
-            setConvertError("Select at least one sheet to convert.");
+            const msg = "Select at least one sheet to convert.";
+            setConvertError(msg);
+            toast({ title: "Conversion Error", description: msg, variant: "destructive" });
             return;
         }
 
@@ -254,18 +283,36 @@ export function UploadValidationStep({
         try {
             const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
             const selected = convertSheets.filter((s) => convertSelectedSheetNames.includes(s.name));
+            console.log(`[Convert Preview] Processing ${selected.length} selected sheet(s):`, selected.map(s => `${s.name} (${s.data?.length || 0} rows)`));
 
             const previewSheets: { name: string; data: any[] }[] = [];
             const blockingErrors: string[] = [];
             const warnings: string[] = [];
 
             for (const sheet of selected) {
+                console.log(`[Convert Preview] Parsing sheet: "${sheet.name}" with ${sheet.data?.length || 0} rows`);
+                if (sheet.data?.length > 0) {
+                    const sampleKeys = Object.keys(sheet.data[0] || {});
+                    console.log(`[Convert Preview] Column headers in "${sheet.name}":`, sampleKeys);
+                    if (sheet.data.length > 0) {
+                        console.log(`[Convert Preview] First row sample:`, JSON.stringify(sheet.data[0]).slice(0, 500));
+                    }
+                }
+
                 const parsed = parseMappingSheet(sheet.data);
+                console.log(`[Convert Preview] Parse result for "${sheet.name}":`, {
+                    format: parsed.detectedFormat,
+                    confidence: parsed.metadata.formatConfidence,
+                    mappingsFound: parsed.columnMappings?.length || 0,
+                    detectedColumns: parsed.metadata.detectedColumns,
+                });
+
                 if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
+                    const errorMsg = `[${sheet.name}] No valid mappings found (detected format: ${parsed.detectedFormat}, confidence: ${parsed.metadata.formatConfidence.toFixed(2)}). Please verify the sheet has Source/Target column headers and data values.`;
                     if (selected.length > 1) {
-                        warnings.push(`[${sheet.name}] No valid mappings found. Skipping this sheet.`);
+                        warnings.push(errorMsg);
                     } else {
-                        blockingErrors.push(`[${sheet.name}] No valid mappings found. Please verify Source/Target column headers and values.`);
+                        blockingErrors.push(errorMsg);
                     }
                     continue;
                 }
@@ -291,6 +338,7 @@ export function UploadValidationStep({
                     name: `QA - ${sheet.name}`,
                     data: rows
                 });
+                console.log(`[Convert Preview] Generated ${rows.length} QA standard rows for "${sheet.name}"`);
             }
 
             setConvertedPreviewSheets(previewSheets);
@@ -304,24 +352,59 @@ export function UploadValidationStep({
             }
 
             if (previewSheets.length === 0 && blockingErrors.length === 0) {
-                setConvertError("No valid mappings were found in any of the selected sheets. Please verify the sheet structures.");
+                // All selected sheets had 0 mappings — warnings were added above.
+                // Promote to a blocking error so the user sees it clearly.
+                const errMsg = warnings.length > 0
+                    ? warnings.join('\n')
+                    : "No valid mappings were found in any of the selected sheets. Please verify the sheet structures.";
+                setConvertError(errMsg);
+                setConvertWarning(null);
+            }
+
+            // Show a toast if there's any error or no results
+            if (previewSheets.length === 0) {
+                toast({
+                    title: "Conversion Failed",
+                    description: `Could not extract mappings from ${selected.length} sheet(s). Check the column headers match Source/Target patterns.`,
+                    variant: "destructive"
+                });
+            } else {
+                const totalRows = previewSheets.reduce((sum, s) => sum + s.data.length, 0);
+                toast({
+                    title: "Preview Generated",
+                    description: `Converted ${totalRows} mapping(s) across ${previewSheets.length} sheet(s).`
+                });
             }
         } catch (err) {
-            console.error('Preview conversion error:', err);
+            console.error('[Convert Preview] Unexpected error:', err);
             clearConvertedPreview();
-            setConvertError("Could not convert the selected sheet(s). Please verify the mapping has Source/Target columns.");
+            const errMsg = "Could not convert the selected sheet(s). Please verify the mapping has Source/Target columns.";
+            setConvertError(errMsg);
+            toast({ title: "Conversion Error", description: errMsg, variant: "destructive" });
         } finally {
             setIsConverting(false);
         }
     };
 
     const handleConvertToQaStandard = async () => {
+        console.log('[Convert & Validate] handleConvertToQaStandard called', {
+            convertSheetsCount: convertSheets.length,
+            convertSelectedSheetNames,
+            convertedPreviewSheetsCount: convertedPreviewSheets.length,
+            hasOnConvertAndValidate: !!onConvertAndValidate,
+            hasOnReplaceWorkbook: !!onReplaceWorkbook,
+        });
+
         if (convertSheets.length === 0) {
-            setConvertError("Please upload a mapping file first.");
+            const msg = "Please upload a mapping file first.";
+            setConvertError(msg);
+            toast({ title: "Conversion Error", description: msg, variant: "destructive" });
             return;
         }
         if (convertSelectedSheetNames.length === 0) {
-            setConvertError("Please select at least one sheet to convert.");
+            const msg = "Please select at least one sheet to convert.";
+            setConvertError(msg);
+            toast({ title: "Conversion Error", description: msg, variant: "destructive" });
             return;
         }
 
@@ -339,9 +422,18 @@ export function UploadValidationStep({
                 const blockingErrors: string[] = [];
 
                 for (const sheet of selected) {
+                    console.log(`[Convert] Auto-parsing sheet: "${sheet.name}" with ${sheet.data?.length || 0} rows`);
+                    if (sheet.data?.length > 0) {
+                        console.log(`[Convert] Column headers:`, Object.keys(sheet.data[0] || {}));
+                    }
                     const parsed = parseMappingSheet(sheet.data);
+                    console.log(`[Convert] Parse result for "${sheet.name}":`, {
+                        format: parsed.detectedFormat,
+                        confidence: parsed.metadata.formatConfidence,
+                        mappingsFound: parsed.columnMappings?.length || 0,
+                    });
                     if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
-                        blockingErrors.push(`[${sheet.name}] No valid mappings found. Please verify Source/Target column headers.`);
+                        blockingErrors.push(`[${sheet.name}] No valid mappings found (format: ${parsed.detectedFormat}). Please verify Source/Target column headers.`);
                         continue;
                     }
                     const rows = parsed.columnMappings.map((m: any) => buildQaStandardRows({ ...m, _sheetName: sheet.name }));
@@ -349,7 +441,9 @@ export function UploadValidationStep({
                 }
 
                 if (blockingErrors.length > 0 && newPreviewSheets.length === 0) {
-                    setConvertError(blockingErrors.join('\n'));
+                    const errMsg = blockingErrors.join('\n');
+                    setConvertError(errMsg);
+                    toast({ title: "Conversion Failed", description: `No valid mappings found in ${selected.length} sheet(s).`, variant: "destructive" });
                     setIsConverting(false);
                     return;
                 }
@@ -363,7 +457,9 @@ export function UploadValidationStep({
                 console.log(`✅ [Convert] Auto-preview generated: ${sheetsToValidate.length} sheet(s)`);
             } catch (err) {
                 console.error('[Convert] Preview generation failed:', err);
-                setConvertError('Could not parse the selected sheet(s). Please verify the mapping has Source/Target columns.');
+                const errMsg = 'Could not parse the selected sheet(s). Please verify the mapping has Source/Target columns.';
+                setConvertError(errMsg);
+                toast({ title: "Conversion Error", description: errMsg, variant: "destructive" });
                 setIsConverting(false);
                 return;
             }
@@ -384,13 +480,18 @@ export function UploadValidationStep({
                     setConvertSheets([]);
                     setConvertSelectedSheetNames([]);
                     clearConvertedPreview();
+                    toast({ title: "Conversion Complete", description: "Mapping sheet converted and validated successfully." });
                 } else {
                     // Show error inside dialog so user can see it
-                    setConvertError(result.error || 'Validation failed. Please check the errors in the panel and try again.');
+                    const errMsg = result.error || 'Validation failed. Please check the errors in the panel and try again.';
+                    setConvertError(errMsg);
+                    toast({ title: "Validation Failed", description: errMsg, variant: "destructive" });
                 }
             } catch (err) {
                 console.error('[Convert Dialog] onConvertAndValidate threw:', err);
-                setConvertError(err instanceof Error ? err.message : 'An unexpected error occurred during validation.');
+                const errMsg = err instanceof Error ? err.message : 'An unexpected error occurred during validation.';
+                setConvertError(errMsg);
+                toast({ title: "Conversion Error", description: errMsg, variant: "destructive" });
             } finally {
                 setIsConverting(false);
             }
@@ -399,7 +500,9 @@ export function UploadValidationStep({
 
         // Fallback: just replace the workbook without validation
         if (!onReplaceWorkbook) {
-            setConvertError("Conversion is not available in this context.");
+            const msg = "Conversion is not available in this context.";
+            setConvertError(msg);
+            toast({ title: "Conversion Error", description: msg, variant: "destructive" });
             setIsConverting(false);
             return;
         }
@@ -410,9 +513,12 @@ export function UploadValidationStep({
             setConvertSheets([]);
             setConvertSelectedSheetNames([]);
             clearConvertedPreview();
+            toast({ title: "Conversion Complete", description: "Mapping sheet converted successfully." });
         } catch (err) {
             console.error('Conversion error:', err);
-            setConvertError("Conversion failed. Please verify the sheet has mappable source/target columns.");
+            const errMsg = "Conversion failed. Please verify the sheet has mappable source/target columns.";
+            setConvertError(errMsg);
+            toast({ title: "Conversion Error", description: errMsg, variant: "destructive" });
         } finally {
             setIsConverting(false);
         }
@@ -1110,7 +1216,7 @@ export function UploadValidationStep({
                 </div>
             </div>
 
-            <Dialog open={showConvertDialog} onOpenChange={setShowConvertDialog}>
+            <Dialog open={showConvertDialog} onOpenChange={handleConvertDialogOpenChange}>
                 <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
                     <DialogHeader>
                         <DialogTitle>Convert to QA Standard Mapping Sheet</DialogTitle>
@@ -1118,6 +1224,20 @@ export function UploadValidationStep({
                             Upload your mapping sheet (single or multi-sheet). Select the sheets to convert, then load the QA standard version into the workflow.
                         </DialogDescription>
                     </DialogHeader>
+
+                    {/* Show errors prominently at the top of the dialog, OUTSIDE the scroll areas */}
+                    {convertError && (
+                        <Alert variant="destructive" className="mx-0 animate-in fade-in slide-in-from-top-2">
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertDescription className="whitespace-pre-line text-sm">{convertError}</AlertDescription>
+                        </Alert>
+                    )}
+                    {convertWarning && !convertError && (
+                        <Alert className="mx-0 animate-in fade-in slide-in-from-top-2 border-amber-300 bg-amber-50/50">
+                            <AlertTriangle className="h-4 w-4 text-amber-600" />
+                            <AlertDescription className="whitespace-pre-line text-sm text-amber-800">{convertWarning}</AlertDescription>
+                        </Alert>
+                    )}
 
                     <div className="flex-1 min-h-0 overflow-hidden">
                         <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-5">
@@ -1159,9 +1279,9 @@ export function UploadValidationStep({
                                     </CardContent>
                                 </Card>
 
-                                <Card className="flex min-h-0 flex-col border-border shadow-sm">
+                                <Card className="flex flex-1 min-h-0 flex-col border-border shadow-sm">
                                     <CardHeader className="border-b bg-muted/10 px-4 py-3">
-                                        <div className="flex items-center justify-between gap-2">
+                                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                                             <div className="space-y-0.5">
                                                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
                                                     <Layers className="h-4 w-4 text-muted-foreground" />
@@ -1180,7 +1300,7 @@ export function UploadValidationStep({
                                                     disabled={isConverting || convertSheets.length === 0 || convertSelectedSheetNames.length === 0}
                                                 >
                                                     {isConverting && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
-                                                    Convert Selected
+                                                    Preview Mappings
                                                 </Button>
                                                 {convertSheets.length > 1 && (
                                                     <>
@@ -1245,13 +1365,16 @@ export function UploadValidationStep({
                                                     ))
                                                 )}
 
+                                                {/* Inline warnings/errors are also shown at the top of the dialog for visibility */}
                                                 {convertWarning && (
-                                                    <Alert className="mt-2">
-                                                        <AlertDescription className="whitespace-pre-line">{convertWarning}</AlertDescription>
+                                                    <Alert className="mt-2 border-amber-300 bg-amber-50/50">
+                                                        <AlertTriangle className="h-4 w-4 text-amber-600" />
+                                                        <AlertDescription className="whitespace-pre-line text-amber-800">{convertWarning}</AlertDescription>
                                                     </Alert>
                                                 )}
                                                 {convertError && (
                                                     <Alert variant="destructive" className="mt-2">
+                                                        <AlertCircle className="h-4 w-4" />
                                                         <AlertDescription className="whitespace-pre-line">{convertError}</AlertDescription>
                                                     </Alert>
                                                 )}
@@ -1293,7 +1416,7 @@ export function UploadValidationStep({
                                             </div>
                                         </div>
                                     </CardHeader>
-                                    <CardContent className="flex-1 min-h-0 pt-4 space-y-3">
+                                    <CardContent className="flex-1 min-h-0 flex flex-col pt-4 gap-3">
                                         <Select value={previewSheetName} onValueChange={setPreviewSheetName} disabled={convertedPreviewSheets.length === 0}>
                                             <SelectTrigger className="w-full">
                                                 <SelectValue placeholder={convertedPreviewSheets.length > 0 ? "Select converted sheet" : "No converted sheets yet"} />
@@ -1388,7 +1511,7 @@ export function UploadValidationStep({
                     </div>
 
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setShowConvertDialog(false)} disabled={isConverting}>
+                        <Button variant="outline" onClick={() => handleConvertDialogOpenChange(false)} disabled={isConverting}>
                             Cancel
                         </Button>
                         <Button
@@ -1396,7 +1519,7 @@ export function UploadValidationStep({
                             disabled={isConverting || convertSheets.length === 0 || convertSelectedSheetNames.length === 0}
                         >
                             {isConverting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                            {isConverting ? 'Validating...' : convertedPreviewSheets.length === 0 ? 'Convert' : 'Convert & Validate'}
+                            {isConverting ? 'Validating...' : 'Convert & Validate'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

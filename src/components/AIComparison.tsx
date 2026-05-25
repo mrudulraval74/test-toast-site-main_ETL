@@ -865,47 +865,47 @@ export default function AIComparison() {
 
             setValidationResults(results);
 
-            if (results.success) {
-                console.log("✅ [handleConvertAndValidate] Database structure validation passed! Logging credit deduction...");
-                // Deduct credits (insert into ai_usage_logs)
-                try {
-                    const { data: { session } } = await supabase.auth.getSession();
-                    if (session?.user?.id) {
-                        const projectId = activeSources[0]?.project_id || targetConnection?.project_id || null;
-                        const { error: creditError } = await supabase
-                            .from('ai_usage_logs')
-                            .insert({
-                                project_id: projectId,
-                                user_id: session.user.id,
-                                feature_type: 'structure_validation',
-                                success: true,
-                                tokens_used: 10,
-                                execution_time_ms: Date.now() - startTime
-                            });
-                        if (creditError) {
-                            console.error('[handleConvertAndValidate] Credit log error:', creditError);
-                        } else {
-                            console.log('💳 [handleConvertAndValidate] Credit deduction successful (10 units)');
-                        }
+            console.log("✅ [handleConvertAndValidate] Database structure validation complete. Logging credit deduction...");
+            // Deduct credits (insert into ai_usage_logs) regardless of success/fail, since we did the AI work
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (session?.user?.id) {
+                    const projectId = activeSources[0]?.project_id || targetConnection?.project_id || null;
+                    const { error: creditError } = await supabase
+                        .from('ai_usage_logs')
+                        .insert({
+                            project_id: projectId,
+                            user_id: session.user.id,
+                            feature_type: 'structure_validation',
+                            success: results.success,
+                            tokens_used: 10,
+                            execution_time_ms: Date.now() - startTime
+                        });
+                    if (creditError) {
+                        console.error('[handleConvertAndValidate] Credit log error:', creditError);
+                    } else {
+                        console.log('💳 [handleConvertAndValidate] Credit deduction successful (10 units)');
                     }
-                } catch (creditErr) {
-                    console.error('[handleConvertAndValidate] Failed to log usage:', creditErr);
                 }
-
-                // Advance step to Step 3
-                setTimeout(() => {
-                    setCurrentStep(3);
-                }, 500);
-
-                return { success: true };
-            } else {
-                const totalErrors = results.sourceErrors.length + results.targetErrors.length;
-                console.error(`❌ [handleConvertAndValidate] Structure validation failed with ${totalErrors} unresolved issues.`);
-                return { 
-                    success: false, 
-                    error: `Structure validation failed with ${totalErrors} errors. Please review the issues in the validation panel.` 
-                };
+            } catch (creditErr) {
+                console.error('[handleConvertAndValidate] Failed to log usage:', creditErr);
             }
+
+            if (!results.success) {
+                const totalErrors = results.sourceErrors.length + results.targetErrors.length;
+                console.warn(`⚠️ [handleConvertAndValidate] Structure validation found ${totalErrors} issues. Proceeding to validation panel.`);
+                // We return success: true so the "Upload & Convert" dialog closes and the user can review errors in Step 3!
+            } else {
+                console.log("✅ [handleConvertAndValidate] Database structure validation passed completely!");
+            }
+
+            // Advance step to Step 3
+            setTimeout(() => {
+                setCurrentStep(3);
+            }, 500);
+
+            return { success: true };
+
         } catch (err) {
             console.error('❌ [handleConvertAndValidate] Error during conversion/validation process:', err);
             return { success: false, error: err instanceof Error ? err.message : 'Unknown error during convert & validate' };
