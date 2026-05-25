@@ -264,18 +264,7 @@ function parseStandardFormat(data: any[], columns: string[], verticalMetadata: a
     const nullCol = findBestColumn(['is nullable', 'nullable', 'null', 'allow null', 'is_nullable', 'optional']);
     const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description', 'business_notes', 'mapping_notes']);
 
-    if (!sourceCol && !targetCol) return null;
-    
-    // Log matched columns for debugging
-    console.log(`📊 Column Matching Debug:
-      Source: ${sourceCol}
-      Target: ${targetCol}
-      Transform: ${transformCol}
-      SrcTable: ${srcTableCol}
-      TgtTable: ${tgtTableCol}
-      PK: ${pkCol}
-      Null: ${nullCol}
-    `);
+
 
     const confidence = (sourceCol ? 0.4 : 0) + (targetCol ? 0.4 : 0) + (transformCol ? 0.2 : 0) + (srcTableCol ? 0.1 : 0);
     if (confidence < 0.25) return null; // Lowered threshold to be more inclusive of sparse sheets

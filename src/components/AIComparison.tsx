@@ -563,6 +563,357 @@ export default function AIComparison() {
         }
     };
 
+    const handleConvertAndValidate = async (
+        fileName: string,
+        convertedSheets: { name: string; data: any[] }[]
+    ): Promise<{ success: boolean; error?: string }> => {
+        console.log(`🔍 [handleConvertAndValidate] Starting workflow for converted file: ${fileName}`);
+        
+        // 1. Update workbook state in UI
+        setSheets(convertedSheets);
+        setAnalysis(null);
+        setValidationResults(null);
+        setAnalysisError(null);
+        setSelectedTestIndices([]);
+        setIsSheetInQAStandardFormat(true);
+
+        if (convertedSheets.length > 0) {
+            setUploadedFile({ name: fileName, data: convertedSheets[0].data });
+            setSelectedSheetNames(convertedSheets.length > 1 ? convertedSheets.map((s) => s.name) : [convertedSheets[0].name]);
+        } else {
+            setUploadedFile(null);
+            setSelectedSheetNames([]);
+            console.error("❌ [handleConvertAndValidate] No sheets found in converted output.");
+            return { success: false, error: "No sheets to validate" };
+        }
+
+        // 2. Aggregate mappings and tables immediately
+        console.log(`[handleConvertAndValidate] Parsing mappings from ${convertedSheets.length} sheets`);
+        const aggregatedParsedMappings: any[] = [];
+        const aggregatedSourceTables = new Set<string>();
+        const aggregatedTargetTables = new Set<string>();
+        const aggregatedErrors: string[] = [];
+
+        try {
+            const { normalizeEmbeddedHeaderRows } = await import('@/utils/mappingSheetParser');
+
+            for (const sheet of convertedSheets) {
+                let globalSourceTable = '';
+                let globalTargetTable = '';
+                for (const row of sheet.data) {
+                    const fieldKey = Object.keys(row).find(k => /field|key|attribute/i.test(k));
+                    const valueKey = Object.keys(row).find(k => /value|detail|name/i.test(k));
+                    if (!fieldKey || !valueKey) continue;
+                    const field = String(row[fieldKey] ?? '').trim().toLowerCase();
+                    const value = String(row[valueKey] ?? '').trim();
+                    if (!value) continue;
+                    if (field === 'target table name' || field === 'target table') globalTargetTable = value;
+                    if (field === 'source' || field === 'source table name' || field === 'source table') globalSourceTable = value;
+                }
+
+                const normalizedData = normalizeEmbeddedHeaderRows(sheet.data);
+                const mappings = normalizedData.filter((row: any) => {
+                    const targetAttr = String(row['Target Attribute Name'] ?? '').trim();
+                    const sourceAttr = String(row['Source Attribute Name'] ?? '').trim();
+                    const targetTbl  = String(row['Target Table Name'] ?? '').trim();
+                    const sourceTbl  = String(row['Source Table Name'] ?? '').trim();
+                    if (targetTbl === 'Target Table Name') return false;
+                    return targetAttr || sourceAttr || targetTbl || sourceTbl;
+                }).map((row: any) => {
+                    const mappingRule = String(row['Data Mapping Rule'] ?? row['Mapping Rule'] ?? '').trim();
+                    const targetKeyRaw = String(row['Target Key'] ?? row['Key'] ?? '').trim().toUpperCase();
+                    const isNullableRaw = String(row['IsNullable'] ?? row['Is Nullable'] ?? row['Nullable'] ?? '').trim().toLowerCase();
+
+                    const rowSourceTable = String(row['Source Table Name'] ?? '').trim();
+                    const rowTargetTable = String(row['Target Table Name'] ?? '').trim();
+                    const resolvedSourceTable = rowSourceTable || globalSourceTable;
+                    const resolvedTargetTable = rowTargetTable || globalTargetTable;
+
+                    return {
+                        sourceColumn: String(row['Source Attribute Name'] ?? '').trim(),
+                        targetColumn: String(row['Target Attribute Name'] ?? '').trim(),
+                        sourceTable: resolvedSourceTable,
+                        targetTable: resolvedTargetTable,
+                        transformationType: 'direct_move' as const,
+                        transformationLogic: mappingRule,
+                        sourceDataType: String(row['Source Attribute DataType'] ?? row['Source DataType'] ?? '').trim(),
+                        targetDataType: String(row['Target DataType'] ?? row['Target Attribute DataType'] ?? '').trim(),
+                        notes: String(row['Notes'] ?? '').trim(),
+                        comments: String(row['Notes'] ?? '').trim(),
+                        complexity: 'simple' as const,
+                        isPrimaryKey: targetKeyRaw === 'PK' || targetKeyRaw === 'Y' || targetKeyRaw === 'YES' || targetKeyRaw === 'TRUE' || targetKeyRaw === '1',
+                        isNullable: isNullableRaw !== 'no' && isNullableRaw !== 'false' && isNullableRaw !== '0',
+                        _sheetName: sheet.name
+                    };
+                }).filter((m: any) => m.targetColumn);
+
+                if (mappings.length > 0) {
+                    aggregatedParsedMappings.push(...mappings);
+                    const srcTableForSheet = globalSourceTable || mappings.find((m: any) => m.sourceTable)?.sourceTable || '';
+                    const tgtTableForSheet = globalTargetTable || mappings.find((m: any) => m.targetTable)?.targetTable || '';
+                    if (srcTableForSheet) aggregatedSourceTables.add(srcTableForSheet);
+                    if (tgtTableForSheet) aggregatedTargetTables.add(tgtTableForSheet);
+                } else {
+                    aggregatedErrors.push(`[${sheet.name}] No valid mappings found in QA standard format.`);
+                }
+            }
+
+            if (aggregatedParsedMappings.length === 0) {
+                const errMsg = aggregatedErrors.length > 0 ? aggregatedErrors.join('\n') : "No mappings detected in selected sheets.";
+                console.error("❌ [handleConvertAndValidate] Mapping extraction failed:", errMsg);
+                setAnalysisError(errMsg);
+                return { success: false, error: errMsg };
+            }
+
+            const preliminaryAnalysis = {
+                sourceTables: Array.from(aggregatedSourceTables),
+                targetTables: Array.from(aggregatedTargetTables),
+                businessRules: [`📋 Analyzed ${convertedSheets.length} sheets`, `Total Mappings: ${aggregatedParsedMappings.length}`],
+                testCases: [],
+                mappings: aggregatedParsedMappings
+            };
+
+            const analysisWithPlaceholders = replaceTablePlaceholders(preliminaryAnalysis as any, sourceConnections[0], targetConnection);
+            setAnalysis(analysisWithPlaceholders);
+
+            // 3. Trigger Structure Validation against database connections
+            const hasSource = multiSourceMode ? sourceConnections.some(c => c.id) : sourceConnections[0]?.id;
+            if (!hasSource || !targetConnection) {
+                console.warn("⚠️ [handleConvertAndValidate] Connections are not fully configured.");
+                return { success: false, error: "Please select both Source and Target connections to validate structure." };
+            }
+
+            if (!selectedAgentId) {
+                console.warn("⚠️ [handleConvertAndValidate] No active agent selected.");
+                return { success: false, error: "Please select an active ETL Agent in Step 1 to run metadata validation." };
+            }
+
+            console.log('🔍 [handleConvertAndValidate] Triggering backend schema fetch API calls...');
+            setIsValidating(true);
+            const startTime = Date.now();
+
+            const results = {
+                sourceErrors: [] as string[],
+                targetErrors: [] as string[],
+                warnings: [] as string[],
+                matches: [] as string[],
+                stats: { tablesFound: 0, columnsFound: 0, totalTables: 0, totalColumns: 0 },
+                success: true
+            };
+
+            let sourceSchemas: any[] = [];
+            let targetSchema: any = null;
+
+            const activeSources = multiSourceMode
+                ? sourceConnections.filter(c => c.id)
+                : [sourceConnections[0]].filter(c => c?.id);
+
+            for (const src of activeSources) {
+                try {
+                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
+                    const schema = await fetchDatabaseSchema(src.id, selectedAgentId || undefined);
+                    sourceSchemas.push(schema);
+                    console.log(`✅ [handleConvertAndValidate] Fetched schema for ${src.name}:`, schema?.totalTables || 0, 'tables');
+                } catch (e) {
+                    const errorMsg = `Failed to fetch metadata for source: ${src.name}`;
+                    results.warnings.push(errorMsg);
+                    console.warn('❌ [handleConvertAndValidate]', errorMsg, e);
+                }
+            }
+
+            if (targetConnection) {
+                try {
+                    const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
+                    targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
+                    console.log('✅ [handleConvertAndValidate] Fetched target schema:', targetSchema?.totalTables || 0, 'tables');
+                } catch (e) {
+                    const errorMsg = `Failed to fetch metadata for target: ${targetConnection.name}`;
+                    results.warnings.push(errorMsg);
+                    console.warn('❌ [handleConvertAndValidate]', errorMsg, e);
+                }
+            }
+
+            const findTable = (schemaData: any, tableName: string) => {
+                if (!schemaData || !Array.isArray(schemaData.tables)) return null;
+                const cleanName = tableName.replace(/[\[\]]/g, '');
+                const parts = cleanName.split('.');
+                const tableBase = parts.length > 1 ? parts[1] : parts[0];
+                const schemaBase = parts.length > 1 ? parts[0] : null;
+
+                for (const table of (schemaData.tables as any[])) {
+                    const schemaName = (table.schema || '').toLowerCase();
+                    const tableNameLower = (table.tableName || table.name || '').toLowerCase();
+                    if (tableNameLower === tableBase.toLowerCase()) {
+                        if (!schemaBase || schemaName === schemaBase.toLowerCase()) {
+                            return {
+                                name: table.tableName || table.name,
+                                columns: table.columns || [],
+                            };
+                        }
+                    }
+                }
+                return null;
+            };
+
+            const processedSourceTables = new Set<string>();
+            const processedTargetTables = new Set<string>();
+            const sourceMatches = new Map<string, { total: Set<string>, found: Set<string>, tableFound: boolean }>();
+            const targetMatches = new Map<string, { total: Set<string>, found: Set<string>, tableFound: boolean }>();
+
+            const getTableStats = (map: Map<string, { total: Set<string>, found: Set<string>, tableFound: boolean }>, tableName: string) => {
+                if (!map.has(tableName)) map.set(tableName, { total: new Set<string>(), found: new Set<string>(), tableFound: false });
+                return map.get(tableName)!;
+            };
+
+            let skippedMappings = { source: 0, target: 0 };
+
+            for (const mapping of aggregatedParsedMappings) {
+                // Source
+                const hasValidSourceData = mapping.sourceTable &&
+                    mapping.sourceTable !== 'Source' &&
+                    mapping.sourceTable !== '-.-' &&
+                    !mapping.sourceTable.includes('-.-') &&
+                    !mapping.sourceTable.includes('[Auto-detected') &&
+                    !mapping.sourceTable.includes('[Configure') &&
+                    mapping.sourceColumn &&
+                    mapping.sourceColumn !== 'Unknown';
+
+                if (sourceSchemas.length > 0 && hasValidSourceData) {
+                    const tableKey = mapping.sourceTable;
+                    const stats = getTableStats(sourceMatches, tableKey);
+                    stats.total.add(mapping.sourceColumn);
+
+                    let tableFound = false;
+                    for (const schemaData of sourceSchemas) {
+                        const table = findTable(schemaData, tableKey);
+                        if (table) {
+                            tableFound = true;
+                            stats.tableFound = true;
+                            const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.sourceColumn.toLowerCase());
+                            if (col) stats.found.add(mapping.sourceColumn);
+                            break;
+                        }
+                    }
+
+                    if (!tableFound) {
+                        if (!processedSourceTables.has(tableKey)) {
+                            results.sourceErrors.push(`Source Table '${tableKey}' not found in any connected databases.`);
+                            processedSourceTables.add(tableKey);
+                        }
+                    } else {
+                        const isFound = Array.from(stats.found).some(c => c.toLowerCase() === mapping.sourceColumn.toLowerCase());
+                        if (!isFound) {
+                            results.sourceErrors.push(`Column '${mapping.sourceColumn}' not found in '${tableKey}'.`);
+                        }
+                    }
+                } else if (sourceSchemas.length > 0) {
+                    skippedMappings.source++;
+                }
+
+                // Target
+                const hasValidTargetData = mapping.targetTable &&
+                    mapping.targetTable !== 'Target' &&
+                    mapping.targetTable !== '-.-' &&
+                    !mapping.targetTable.includes('-.-') &&
+                    !mapping.targetTable.includes('[Auto-detected') &&
+                    !mapping.targetTable.includes('[Configure') &&
+                    mapping.targetColumn &&
+                    mapping.targetColumn !== 'Unknown';
+
+                if (targetSchema && hasValidTargetData) {
+                    const tableKey = mapping.targetTable;
+                    const stats = getTableStats(targetMatches, tableKey);
+                    stats.total.add(mapping.targetColumn);
+                    const table = findTable(targetSchema, tableKey);
+
+                    if (!table) {
+                        if (!processedTargetTables.has(tableKey)) {
+                            results.targetErrors.push(`Target Table '${tableKey}' not found.`);
+                            processedTargetTables.add(tableKey);
+                        }
+                    } else {
+                        stats.tableFound = true;
+                        const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.targetColumn.toLowerCase());
+                        if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.name}'.`);
+                        else stats.found.add(mapping.targetColumn);
+                    }
+                } else if (targetSchema) {
+                    skippedMappings.target++;
+                }
+            }
+
+            if (skippedMappings.source > 0 || skippedMappings.target > 0) {
+                results.warnings.push(`⚠️ Skipped ${skippedMappings.source} source and ${skippedMappings.target} target mappings due to missing/generic table names.`);
+            }
+
+            let totalTbl = 0, foundTbl = 0, totalCol = 0, foundCol = 0;
+            sourceMatches.forEach((stats, tableName) => {
+                totalTbl++; totalCol += stats.total.size;
+                if (stats.tableFound) { foundTbl++; foundCol += stats.found.size; results.matches.push(`source:Table '${tableName}': Verified ${stats.found.size}/${stats.total.size} cols`); }
+            });
+            targetMatches.forEach((stats, tableName) => {
+                totalTbl++; totalCol += stats.total.size;
+                if (stats.tableFound) { foundTbl++; foundCol += stats.found.size; results.matches.push(`target:Table '${tableName}': Verified ${stats.found.size}/${stats.total.size} cols`); }
+            });
+
+            results.stats = { tablesFound: foundTbl, columnsFound: foundCol, totalTables: totalTbl, totalColumns: totalCol };
+            results.success = results.sourceErrors.length === 0 && results.targetErrors.length === 0;
+
+            console.log('📊 [handleConvertAndValidate] Validation Results:', results.stats);
+            console.log('✅ [handleConvertAndValidate] Matches:', results.matches.length);
+            console.log('❌ [handleConvertAndValidate] Errors:', results.sourceErrors.length + results.targetErrors.length);
+
+            setValidationResults(results);
+
+            if (results.success) {
+                console.log("✅ [handleConvertAndValidate] Database structure validation passed! Logging credit deduction...");
+                // Deduct credits (insert into ai_usage_logs)
+                try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session?.user?.id) {
+                        const projectId = activeSources[0]?.project_id || targetConnection?.project_id || null;
+                        const { error: creditError } = await supabase
+                            .from('ai_usage_logs')
+                            .insert({
+                                project_id: projectId,
+                                user_id: session.user.id,
+                                feature_type: 'structure_validation',
+                                success: true,
+                                tokens_used: 10,
+                                execution_time_ms: Date.now() - startTime
+                            });
+                        if (creditError) {
+                            console.error('[handleConvertAndValidate] Credit log error:', creditError);
+                        } else {
+                            console.log('💳 [handleConvertAndValidate] Credit deduction successful (10 units)');
+                        }
+                    }
+                } catch (creditErr) {
+                    console.error('[handleConvertAndValidate] Failed to log usage:', creditErr);
+                }
+
+                // Advance step to Step 3
+                setTimeout(() => {
+                    setCurrentStep(3);
+                }, 500);
+
+                return { success: true };
+            } else {
+                const totalErrors = results.sourceErrors.length + results.targetErrors.length;
+                console.error(`❌ [handleConvertAndValidate] Structure validation failed with ${totalErrors} unresolved issues.`);
+                return { 
+                    success: false, 
+                    error: `Structure validation failed with ${totalErrors} errors. Please review the issues in the validation panel.` 
+                };
+            }
+        } catch (err) {
+            console.error('❌ [handleConvertAndValidate] Error during conversion/validation process:', err);
+            return { success: false, error: err instanceof Error ? err.message : 'Unknown error during convert & validate' };
+        } finally {
+            setIsValidating(false);
+        }
+    };
+
     const handleSheetsSelectionChange = (names: string[]) => {
         setSelectedSheetNames(names);
         // Do not auto-analyze. User must click "Analyze Selected"
@@ -2409,6 +2760,7 @@ export default function AIComparison() {
                                     setIsSheetInQAStandardFormat(false);
                                 }}
                                 onReplaceWorkbook={replaceWorkbook}
+                                onConvertAndValidate={handleConvertAndValidate}
                                 savedConnections={savedConnections}
                                 sourceConnections={sourceConnections}
                                 multiSourceMode={multiSourceMode}

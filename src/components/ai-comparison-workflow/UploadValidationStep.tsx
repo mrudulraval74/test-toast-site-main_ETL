@@ -60,6 +60,10 @@ interface UploadValidationStepProps {
         nextSheets: { name: string; data: any[] }[],
         options?: { analyze?: boolean }
     ) => void | Promise<void>;
+    onConvertAndValidate?: (
+        fileName: string,
+        nextSheets: { name: string; data: any[] }[]
+    ) => Promise<{ success: boolean; error?: string }>;
 
     promptInstructions?: string;
     onPromptInstructionsChange?: (value: string) => void;
@@ -95,6 +99,7 @@ export function UploadValidationStep({
     mappingSheetMode = 'qa_standard',
     onMappingSheetModeChange,
     onReplaceWorkbook,
+    onConvertAndValidate,
     promptInstructions = '',
     onPromptInstructionsChange
 }: UploadValidationStepProps) {
@@ -311,27 +316,95 @@ export function UploadValidationStep({
     };
 
     const handleConvertToQaStandard = async () => {
+        if (convertSheets.length === 0) {
+            setConvertError("Please upload a mapping file first.");
+            return;
+        }
+        if (convertSelectedSheetNames.length === 0) {
+            setConvertError("Please select at least one sheet to convert.");
+            return;
+        }
+
+        setIsConverting(true);
+        setConvertError(null);
+
+        // Step 1: If no preview generated yet, auto-generate it now
+        let sheetsToValidate = convertedPreviewSheets;
+        if (sheetsToValidate.length === 0) {
+            console.log('🔄 [Convert] No preview yet — auto-generating preview before validation...');
+            try {
+                const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
+                const selected = convertSheets.filter((s) => convertSelectedSheetNames.includes(s.name));
+                const newPreviewSheets: { name: string; data: any[] }[] = [];
+                const blockingErrors: string[] = [];
+
+                for (const sheet of selected) {
+                    const parsed = parseMappingSheet(sheet.data);
+                    if (!parsed.columnMappings || parsed.columnMappings.length === 0) {
+                        blockingErrors.push(`[${sheet.name}] No valid mappings found. Please verify Source/Target column headers.`);
+                        continue;
+                    }
+                    const rows = parsed.columnMappings.map((m: any) => buildQaStandardRows({ ...m, _sheetName: sheet.name }));
+                    newPreviewSheets.push({ name: `QA - ${sheet.name}`, data: rows });
+                }
+
+                if (blockingErrors.length > 0 && newPreviewSheets.length === 0) {
+                    setConvertError(blockingErrors.join('\n'));
+                    setIsConverting(false);
+                    return;
+                }
+                if (blockingErrors.length > 0) {
+                    setConvertWarning(blockingErrors.join('\n'));
+                }
+
+                setConvertedPreviewSheets(newPreviewSheets);
+                setPreviewSheetName(newPreviewSheets[0]?.name || '');
+                sheetsToValidate = newPreviewSheets;
+                console.log(`✅ [Convert] Auto-preview generated: ${sheetsToValidate.length} sheet(s)`);
+            } catch (err) {
+                console.error('[Convert] Preview generation failed:', err);
+                setConvertError('Could not parse the selected sheet(s). Please verify the mapping has Source/Target columns.');
+                setIsConverting(false);
+                return;
+            }
+        }
+
+        const qaFileName = `QA_Standard_${convertFileName || 'mapping'}`;
+
+        // Step 2: Prefer the validate+advance flow when available
+        if (onConvertAndValidate) {
+            console.log('🚀 [Convert Dialog] Calling onConvertAndValidate with', sheetsToValidate.length, 'sheets');
+            try {
+                const result = await onConvertAndValidate(qaFileName, sheetsToValidate);
+                console.log('📋 [Convert Dialog] onConvertAndValidate result:', result);
+                if (result.success) {
+                    // Success: close dialog and reset state
+                    setShowConvertDialog(false);
+                    setConvertFileName('');
+                    setConvertSheets([]);
+                    setConvertSelectedSheetNames([]);
+                    clearConvertedPreview();
+                } else {
+                    // Show error inside dialog so user can see it
+                    setConvertError(result.error || 'Validation failed. Please check the errors in the panel and try again.');
+                }
+            } catch (err) {
+                console.error('[Convert Dialog] onConvertAndValidate threw:', err);
+                setConvertError(err instanceof Error ? err.message : 'An unexpected error occurred during validation.');
+            } finally {
+                setIsConverting(false);
+            }
+            return;
+        }
+
+        // Fallback: just replace the workbook without validation
         if (!onReplaceWorkbook) {
             setConvertError("Conversion is not available in this context.");
+            setIsConverting(false);
             return;
         }
-
-        if (convertedPreviewSheets.length === 0) {
-            setConvertError("No converted preview available. Please upload a file and select at least one sheet.");
-            return;
-        }
-        if (convertError) {
-            setConvertError("Fix the conversion errors before loading the QA standard workbook.");
-            return;
-        }
-
         try {
-            await onReplaceWorkbook(
-                `QA_Standard_${convertFileName || 'mapping'}`,
-                convertedPreviewSheets,
-                { analyze: true }
-            );
-
+            await onReplaceWorkbook(qaFileName, sheetsToValidate, { analyze: true });
             setShowConvertDialog(false);
             setConvertFileName('');
             setConvertSheets([]);
@@ -340,6 +413,8 @@ export function UploadValidationStep({
         } catch (err) {
             console.error('Conversion error:', err);
             setConvertError("Conversion failed. Please verify the sheet has mappable source/target columns.");
+        } finally {
+            setIsConverting(false);
         }
     };
 
@@ -1316,9 +1391,12 @@ export function UploadValidationStep({
                         <Button variant="outline" onClick={() => setShowConvertDialog(false)} disabled={isConverting}>
                             Cancel
                         </Button>
-                        <Button onClick={handleConvertToQaStandard} disabled={isConverting || convertedPreviewSheets.length === 0 || !!convertError}>
+                        <Button
+                            onClick={handleConvertToQaStandard}
+                            disabled={isConverting || convertSheets.length === 0 || convertSelectedSheetNames.length === 0}
+                        >
                             {isConverting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                            Load & Continue
+                            {isConverting ? 'Validating...' : convertedPreviewSheets.length === 0 ? 'Convert' : 'Convert & Validate'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
