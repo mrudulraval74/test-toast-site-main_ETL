@@ -387,7 +387,7 @@ export function UploadValidationStep({
     };
 
     const handleConvertToQaStandard = async () => {
-        console.log('[Convert & Validate] handleConvertToQaStandard called', {
+        console.log('[Convert] handleConvertToQaStandard called', {
             convertSheetsCount: convertSheets.length,
             convertSelectedSheetNames,
             convertedPreviewSheetsCount: convertedPreviewSheets.length,
@@ -412,9 +412,9 @@ export function UploadValidationStep({
         setConvertError(null);
 
         // Step 1: If no preview generated yet, auto-generate it now
-        let sheetsToValidate = convertedPreviewSheets;
-        if (sheetsToValidate.length === 0) {
-            console.log('🔄 [Convert] No preview yet — auto-generating preview before validation...');
+        let sheetsToLoad = convertedPreviewSheets;
+        if (sheetsToLoad.length === 0) {
+            console.log('🔄 [Convert] No preview yet — auto-generating preview before loading...');
             try {
                 const { parseMappingSheet } = await import('@/utils/mappingSheetParser');
                 const selected = convertSheets.filter((s) => convertSelectedSheetNames.includes(s.name));
@@ -453,8 +453,8 @@ export function UploadValidationStep({
 
                 setConvertedPreviewSheets(newPreviewSheets);
                 setPreviewSheetName(newPreviewSheets[0]?.name || '');
-                sheetsToValidate = newPreviewSheets;
-                console.log(`✅ [Convert] Auto-preview generated: ${sheetsToValidate.length} sheet(s)`);
+                sheetsToLoad = newPreviewSheets;
+                console.log(`✅ [Convert] Auto-preview generated: ${sheetsToLoad.length} sheet(s)`);
             } catch (err) {
                 console.error('[Convert] Preview generation failed:', err);
                 const errMsg = 'Could not parse the selected sheet(s). Please verify the mapping has Source/Target columns.';
@@ -467,29 +467,21 @@ export function UploadValidationStep({
 
         const qaFileName = `QA_Standard_${convertFileName || 'mapping'}`;
 
-        // Step 2: Prefer the validate+advance flow when available
-        if (onConvertAndValidate) {
-            console.log('🚀 [Convert Dialog] Calling onConvertAndValidate with', sheetsToValidate.length, 'sheets');
+        // Step 2: Load the converted QA standard workbook into Step 2.
+        // Validation and test generation are intentionally separate user actions.
+        if (onReplaceWorkbook) {
+            console.log('🚀 [Convert Dialog] Loading converted workbook with', sheetsToLoad.length, 'sheets');
             try {
-                const result = await onConvertAndValidate(qaFileName, sheetsToValidate);
-                console.log('📋 [Convert Dialog] onConvertAndValidate result:', result);
-                if (result.success) {
-                    // Success: close dialog and reset state
-                    setShowConvertDialog(false);
-                    setConvertFileName('');
-                    setConvertSheets([]);
-                    setConvertSelectedSheetNames([]);
-                    clearConvertedPreview();
-                    toast({ title: "Conversion Complete", description: "Mapping sheet converted and validated successfully." });
-                } else {
-                    // Show error inside dialog so user can see it
-                    const errMsg = result.error || 'Validation failed. Please check the errors in the panel and try again.';
-                    setConvertError(errMsg);
-                    toast({ title: "Validation Failed", description: errMsg, variant: "destructive" });
-                }
+                await onReplaceWorkbook(qaFileName, sheetsToLoad, { analyze: true });
+                setShowConvertDialog(false);
+                setConvertFileName('');
+                setConvertSheets([]);
+                setConvertSelectedSheetNames([]);
+                clearConvertedPreview();
+                toast({ title: "Conversion Complete", description: "Mapping sheet converted. Review it in Step 2, then validate structure when ready." });
             } catch (err) {
-                console.error('[Convert Dialog] onConvertAndValidate threw:', err);
-                const errMsg = err instanceof Error ? err.message : 'An unexpected error occurred during validation.';
+                console.error('[Convert Dialog] Workbook load failed:', err);
+                const errMsg = err instanceof Error ? err.message : 'An unexpected error occurred while loading the converted workbook.';
                 setConvertError(errMsg);
                 toast({ title: "Conversion Error", description: errMsg, variant: "destructive" });
             } finally {
@@ -498,8 +490,8 @@ export function UploadValidationStep({
             return;
         }
 
-        // Fallback: just replace the workbook without validation
-        if (!onReplaceWorkbook) {
+        // Legacy fallback for callers that still provide the old combined callback.
+        if (!onConvertAndValidate) {
             const msg = "Conversion is not available in this context.";
             setConvertError(msg);
             toast({ title: "Conversion Error", description: msg, variant: "destructive" });
@@ -507,7 +499,10 @@ export function UploadValidationStep({
             return;
         }
         try {
-            await onReplaceWorkbook(qaFileName, sheetsToValidate, { analyze: true });
+            const result = await onConvertAndValidate(qaFileName, sheetsToLoad);
+            if (!result.success) {
+                throw new Error(result.error || "Conversion failed.");
+            }
             setShowConvertDialog(false);
             setConvertFileName('');
             setConvertSheets([]);
@@ -1519,7 +1514,7 @@ export function UploadValidationStep({
                             disabled={isConverting || convertSheets.length === 0 || convertSelectedSheetNames.length === 0}
                         >
                             {isConverting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                            {isConverting ? 'Validating...' : 'Convert & Validate'}
+                            {isConverting ? 'Converting...' : 'Convert'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

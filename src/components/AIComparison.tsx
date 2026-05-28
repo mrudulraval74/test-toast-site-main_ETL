@@ -414,7 +414,7 @@ export default function AIComparison() {
     const canAccessStep = (step: number): boolean => {
         if (step === 1) return true; // Connections panel always accessible
         if (step === 2) return savedConnections.length >= 2; // Need at least 2 connections created
-        if (step === 3) return !!(uploadedFile || analysis?.testCases?.length); // Need file or loaded test cases
+        if (step === 3) return !!(validationResults || analysis?.testCases?.length); // Need validation or loaded test cases
         if (step === 4) return !!(analysis?.testCases?.length); // Need test cases for save
         return false;
     };
