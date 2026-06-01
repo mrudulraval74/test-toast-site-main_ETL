@@ -270,6 +270,7 @@ export default function AIComparison() {
     const agentFetchInFlightRef = useRef(false);
     const pendingAgentRefreshRef = useRef(false);
     const lastAgentFetchAtRef = useRef(0);
+    const validationAbortControllerRef = useRef<AbortController | null>(null);
 
     const fetchAgents = useCallback(async (options?: { silent?: boolean; force?: boolean }) => {
         const silent = options?.silent ?? false;
@@ -342,22 +343,13 @@ export default function AIComparison() {
     useEffect(() => {
         fetchAgents();
 
-        // Subscribe to agent changes
-        const channel = supabase
-            .channel('public:self_hosted_agents')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'self_hosted_agents' }, () => {
-                fetchAgents({ silent: true });
-            })
-            .subscribe();
-
-        // Fallback polling keeps heartbeat status fresh even if realtime events are delayed/missed.
+        // Polling keeps heartbeat status fresh without excessive websocket connections
         const intervalId = window.setInterval(() => {
             fetchAgents({ silent: true });
         }, 30000);
 
         return () => {
             window.clearInterval(intervalId);
-            supabase.removeChannel(channel);
         };
     }, [fetchAgents]);
 

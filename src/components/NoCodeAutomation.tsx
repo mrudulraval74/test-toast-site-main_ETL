@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Play, Trash2, Edit, Eye, Check, X, Circle, CheckCircle2, XCircle, Loader2, Upload, AlertCircle, Cpu, Server, ChevronUp, ChevronDown, Image, Copy, FolderPlus, Layers, Download, Folder, ChevronRight, FolderOpen, GripVertical, Wand2, Sparkles, FileText, FileSpreadsheet, Video, Square, RefreshCw, Database } from "lucide-react";
+import { Plus, Play, Trash2, Edit, Eye, Check, X, Circle, CheckCircle2, XCircle, Loader2, Upload, AlertCircle, Cpu, Server, Monitor, ChevronUp, ChevronDown, Image, Copy, FolderPlus, Layers, Download, Folder, ChevronRight, FolderOpen, GripVertical, Wand2, Sparkles, FileText, FileSpreadsheet, Video, Square, RefreshCw, Database } from "lucide-react";
 import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, useDraggable, useDroppable, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -23,6 +23,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { SuitePrerequisites } from "@/components/nocode/SuitePrerequisites";

@@ -30,7 +30,11 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 /**
  * Fetch database schema from backend API
  */
-export async function fetchDatabaseSchema(connectionId: string, agentId?: string): Promise<DatabaseSchema> {
+export async function fetchDatabaseSchema(
+    connectionId: string, 
+    agentId?: string,
+    options?: { signal?: AbortSignal }
+): Promise<DatabaseSchema> {
     // Check cache first
     const cached = schemaCache.get(connectionId);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
@@ -40,6 +44,9 @@ export async function fetchDatabaseSchema(connectionId: string, agentId?: string
 
     try {
         console.log('Fetching schema for connection', connectionId);
+        if (options?.signal?.aborted) {
+            throw new Error('Metadata fetch aborted');
+        }
         const { data, error } = await connectionsApi.metadata(connectionId, agentId);
         if (error) {
             throw new Error(`Failed to fetch schema: ${error}`);
@@ -48,25 +55,44 @@ export async function fetchDatabaseSchema(connectionId: string, agentId?: string
         let metadata: any = data;
         if (data?.jobId) {
             const jobId = data.jobId as string;
-            const { promise } = pollJobUntilComplete(jobId, {
+            const { cancel, promise } = pollJobUntilComplete(jobId, {
                 intervalMs: 2500,
                 maxIntervalMs: 5000,
                 timeoutMs: 60000,
             });
-            const { data: job, timedOut } = await promise;
 
-            if (timedOut) {
-                throw new Error('Metadata job timed out');
+            const onAbort = () => {
+                cancel();
+            };
+
+            if (options?.signal) {
+                options.signal.addEventListener('abort', onAbort);
             }
 
-            if (!job) {
-                throw new Error('Metadata job did not return a result');
-            }
+            try {
+                const { data: job, timedOut, cancelled } = await promise;
 
-            if ((job as any).status === 'completed') {
-                metadata = (job as any).result || {};
-            } else {
-                throw new Error((job as any).error_log || 'Metadata job failed');
+                if (cancelled || options?.signal?.aborted) {
+                    throw new Error('Metadata job cancelled');
+                }
+
+                if (timedOut) {
+                    throw new Error('Metadata job timed out');
+                }
+
+                if (!job) {
+                    throw new Error('Metadata job did not return a result');
+                }
+
+                if ((job as any).status === 'completed') {
+                    metadata = (job as any).result || {};
+                } else {
+                    throw new Error((job as any).error_log || 'Metadata job failed');
+                }
+            } finally {
+                if (options?.signal) {
+                    options.signal.removeEventListener('abort', onAbort);
+                }
             }
         }
 

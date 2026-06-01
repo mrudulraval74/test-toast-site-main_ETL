@@ -1,0 +1,1 @@
+ALTER TABLE public.test_run_cases ADD COLUMN IF NOT EXISTS artifacts jsonb DEFAULT '[]'::jsonb;

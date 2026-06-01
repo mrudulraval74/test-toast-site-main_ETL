@@ -21,6 +21,7 @@ import { NoCodeAutomation } from "@/components/NoCodeAutomation";
 import { AIGovernance } from "@/components/AIGovernance";
 import { ArchitectureVisualization } from "@/components/ArchitectureVisualization";
 import { AgentManagement } from "@/components/AgentManagement";
+import { LocalSDLCPage } from "@/components/LocalSDLCPage";
 import AIComparison from "@/components/AIComparison";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -95,10 +96,14 @@ const Project = () => {
 
     switch (currentView) {
       case "dashboard":
-        return <Dashboard onViewChange={setCurrentView} projectId={selectedProject.id} />;
+      case "requirement-dashboard":
+        return <Dashboard onViewChange={handleViewChange} projectId={selectedProject.id} />;
+      case "requirement-analysis":
+      case "user-story":
       case "user-stories":
-        return <UserStories onViewChange={setCurrentView} projectId={selectedProject.id} />;
+        return <UserStories onViewChange={handleViewChange} projectId={selectedProject.id} />;
       case "test-cases":
+      case "unit-test-cases":
         return <TestCasesWithTabs projectId={selectedProject.id} />;
       case "test-plan":
         return <TestPlan projectId={selectedProject.id} />;
@@ -109,9 +114,15 @@ const Project = () => {
       case "automation":
         return <Automation projectId={selectedProject.id} />;
       case "repository":
+      case "development-dashboard":
+      case "feature-implementation":
+      case "explain-code":
+      case "peer-review":
         return <Repository projectId={selectedProject.id} />;
+      case "maintenance-issues":
       case "defects":
-        return <Defects onViewChange={setCurrentView} projectId={selectedProject.id} />;
+        return <Defects onViewChange={handleViewChange} projectId={selectedProject.id} />;
+      case "api-contracts":
       case "api":
         return <SwaggerTestGenerator projectId={selectedProject.id} />;
       case "performance":
@@ -122,13 +133,23 @@ const Project = () => {
       case "ai-governance":
         return <AIGovernance projectId={selectedProject.id} />;
       case "agents":
+      case "deployment-dashboard":
         return <AgentManagement projectId={projectId!} />;
+      case "design-dashboard":
       case "architecture":
         return <ArchitectureVisualization />;
       case "etl-workflow":
         return <AIComparison />;
+      case "ui-ux-wireframes":
+        return <LocalSDLCPage title="UI/UX Wireframes" phase="Design" projectId={selectedProject.id} onViewChange={handleViewChange} />;
+      case "data-model":
+        return <LocalSDLCPage title="Data Model" phase="Design" projectId={selectedProject.id} onViewChange={handleViewChange} />;
+      case "cicd-pipeline":
+        return <Integrations projectId={selectedProject.id} />;
+      case "iac":
+        return <LocalSDLCPage title="Infrastructure as Code" phase="Deployment" projectId={selectedProject.id} onViewChange={handleViewChange} />;
       default:
-        return <Dashboard onViewChange={setCurrentView} projectId={selectedProject.id} />;
+        return <LocalSDLCPage title={currentView} phase="Project" projectId={selectedProject.id} onViewChange={handleViewChange} />;
     }
   };
 

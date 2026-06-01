@@ -53,6 +53,7 @@ interface UploadValidationStepProps {
     selectedSheetNames?: string[];
     onSheetsSelectionChange?: (names: string[]) => void;
     onAnalyzeSelected?: () => void;
+    onStopValidation?: () => void;
 
     mappingSheetMode?: MappingSheetMode;
     onMappingSheetModeChange?: (mode: MappingSheetMode) => void;

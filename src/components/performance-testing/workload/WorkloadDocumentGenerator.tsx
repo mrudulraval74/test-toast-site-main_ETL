@@ -1,0 +1,290 @@
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { FileText, Download, Copy, Check } from "lucide-react";
+import { toast } from "sonner";
+import {
+  WorkloadModel,
+  WorkloadModelType,
+  BusinessInputs,
+  TechnicalInputs,
+  UserJourney,
+  LoadPatternType,
+  SystemType,
+  LoadLevel,
+} from "../types";
+import {
+  calculateWorkload,
+  getSystemTypeLabel,
+  getLoadPatternLabel,
+  getLoadLevelLabel,
+  formatDuration,
+} from "./utils";
+
+interface WorkloadDocumentGeneratorProps {
+  modelType: WorkloadModelType;
+  systemType: SystemType;
+  loadPattern: LoadPatternType;
+  businessInputs: BusinessInputs;
+  technicalInputs: TechnicalInputs;
+  userJourneys: UserJourney[];
+  loadLevel: LoadLevel;
+  thinkTime: number;
+}
+
+export const WorkloadDocumentGenerator = ({
+  modelType,
+  systemType,
+  loadPattern,
+  businessInputs,
+  technicalInputs,
+  userJourneys,
+  loadLevel,
+  thinkTime,
+}: WorkloadDocumentGeneratorProps) => {
+  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const calculation = calculateWorkload(
+    modelType,
+    businessInputs,
+    technicalInputs,
+    loadLevel,
+    thinkTime
+  );
+
+  const generateMarkdown = (): string => {
+    const now = new Date().toISOString().split('T')[0];
+    
+    return `# Workload Model Document
+
+**Generated:** ${now}
+**System Type:** ${getSystemTypeLabel(systemType)}
+**Workload Model:** ${modelType === 'open' ? 'Open (Rate-based)' : 'Closed (User-based)'}
+**Load Pattern:** ${getLoadPatternLabel(loadPattern)}
+**Load Level:** ${getLoadLevelLabel(loadLevel)}
+
+---
+
+## Executive Summary
+
+This document defines the workload model for performance testing. The model is designed to simulate ${getLoadLevelLabel(loadLevel).toLowerCase()} traffic conditions using a ${modelType} workload approach.
+
+**Key Metrics:**
+- Concurrent Users: **${calculation.concurrentUsers}**
+- Target TPS: **${calculation.targetTps.toFixed(2)}**
+- Ramp-Up Time: **${formatDuration(calculation.rampUpTime)}**
+- Test Duration: **${formatDuration(calculation.duration)}**
+
+---
+
+## Business Inputs
+
+| Parameter | Value |
+|-----------|-------|
+| Daily Active Users (DAU) | ${businessInputs.dailyActiveUsers.toLocaleString()} |
+| Peak Hour Multiplier | ${businessInputs.peakHourMultiplier}x |
+| Avg Session Duration | ${businessInputs.sessionDurationMinutes} minutes |
+| Actions Per Session | ${businessInputs.averageActionsPerSession} |
+| Peak Hour Start (UTC) | ${businessInputs.peakHourStartUtc} |
+| Peak Hour Duration | ${businessInputs.peakHourDurationMinutes} minutes |
+| Seasonal Spike | ${businessInputs.seasonalSpike ? `Yes (${businessInputs.spikeMultiplier}x)` : 'No'} |
+
+---
+
+## Technical Inputs
+
+| Parameter | Value |
+|-----------|-------|
+| Target TPS | ${technicalInputs.targetTps} |
+| Avg Response Time | ${technicalInputs.avgResponseTimeMs} ms |
+| P95 Response Time | ${technicalInputs.p95ResponseTimeMs} ms |
+| Max Capacity | ${technicalInputs.maxCapacityUsers} users |
+| SLA Response Time | ${technicalInputs.slaResponseTimeMs} ms |
+| Error Rate Threshold | ${technicalInputs.errorRateThreshold}% |
+
+---
+
+## User Journey Matrix
+
+${userJourneys.length > 0 ? `
+| Journey | Traffic % | Avg Response Time | Think Time |
+|---------|-----------|-------------------|------------|
+${userJourneys.map(j => `| ${j.name} | ${j.trafficPercentage}% | ${j.avgResponseTime} ms | ${j.thinkTime} ms |`).join('\n')}
+` : '_No user journeys defined_'}
+
+---
+
+## Workload Calculation
+
+**Formula Applied:**
+\`\`\`
+${calculation.formula}
+\`\`\`
+
+**Explanation:**
+${calculation.explanation}
+
+---
+
+## JMeter Configuration
+
+\`\`\`xml
+<ThreadGroup>
+  <stringProp name="ThreadGroup.num_threads">${calculation.concurrentUsers}</stringProp>
+  <stringProp name="ThreadGroup.ramp_time">${calculation.rampUpTime}</stringProp>
+  <stringProp name="ThreadGroup.duration">${calculation.duration}</stringProp>
+  <boolProp name="ThreadGroup.scheduler">true</boolProp>
+</ThreadGroup>
+\`\`\`
+
+---
+
+## Recommendations
+
+1. **Pre-test Validation:** Run a baseline test with 20% load to validate script stability
+2. **Monitoring:** Ensure APM and infrastructure monitoring is enabled
+3. **Data:** Use realistic test data with proper parameterization
+4. **Environment:** Ensure test environment matches production configuration
+5. **Baseline:** Capture baseline metrics before stress testing
+
+---
+
+## Appendix: Assumptions
+
+- Active hours assumed: 8 hours per day
+- Think time represents realistic user behavior
+- Response times based on current production metrics
+- Load distribution assumes uniform geographic access
+
+---
+
+*Document generated by Performance Test Studio*
+`;
+  };
+
+  const generateJson = (): string => {
+    return JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        modelType,
+        systemType,
+        loadPattern,
+        loadLevel,
+        businessInputs,
+        technicalInputs,
+        userJourneys,
+        calculation,
+      },
+      null,
+      2
+    );
+  };
+
+  const handleCopy = (content: string) => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    toast.success('Copied to clipboard');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = (content: string, filename: string, type: string) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success(`Downloaded ${filename}`);
+  };
+
+  const markdown = generateMarkdown();
+  const json = generateJson();
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="gap-2">
+          <FileText className="h-4 w-4" />
+          Export Document
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl max-h-[80vh]">
+        <DialogHeader>
+          <DialogTitle>Workload Model Document</DialogTitle>
+          <DialogDescription>
+            Export your workload model as a shareable document
+          </DialogDescription>
+        </DialogHeader>
+
+        <Tabs defaultValue="markdown" className="mt-4">
+          <TabsList>
+            <TabsTrigger value="markdown">Markdown</TabsTrigger>
+            <TabsTrigger value="json">JSON</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="markdown">
+            <ScrollArea className="h-[400px] border rounded-lg p-4">
+              <pre className="text-xs whitespace-pre-wrap font-mono">{markdown}</pre>
+            </ScrollArea>
+            <div className="flex gap-2 mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleCopy(markdown)}
+              >
+                {copied ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
+                Copy
+              </Button>
+              <Button
+                size="sm"
+                onClick={() =>
+                  handleDownload(markdown, 'workload-model.md', 'text/markdown')
+                }
+              >
+                <Download className="h-4 w-4 mr-1" />
+                Download .md
+              </Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="json">
+            <ScrollArea className="h-[400px] border rounded-lg p-4">
+              <pre className="text-xs whitespace-pre-wrap font-mono">{json}</pre>
+            </ScrollArea>
+            <div className="flex gap-2 mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleCopy(json)}
+              >
+                {copied ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
+                Copy
+              </Button>
+              <Button
+                size="sm"
+                onClick={() =>
+                  handleDownload(json, 'workload-model.json', 'application/json')
+                }
+              >
+                <Download className="h-4 w-4 mr-1" />
+                Download .json
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};

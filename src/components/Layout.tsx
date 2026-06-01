@@ -303,11 +303,10 @@ const AppSidebar = ({
                     <SidebarMenu>
                       {phase.items.map((item) => {
                         const isActive = currentView === item.id;
-                        const isClickable = phase.id === "testing";
                         return (
                           <SidebarMenuItem key={item.id}>
                             <SidebarMenuButton
-                              onClick={isClickable ? () => onViewChange(item.id) : undefined}
+                              onClick={() => onViewChange(item.id)}
                               tooltip={item.label}
                               className={`relative ml-2 pl-4 ${isActive
                                 ? "bg-primary/5 text-foreground font-medium before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-6 before:w-1 before:bg-primary before:rounded-r"

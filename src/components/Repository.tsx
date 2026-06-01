@@ -72,25 +72,13 @@ export const Repository: React.FC<RepositoryProps> = ({ projectId }) => {
     };
     fetchSeleniumAgents();
 
-    // Set up realtime subscription for agent status changes
-    const channel = supabase
-      .channel('selenium-agents-status')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'self_hosted_agents',
-          filter: `project_id=eq.${projectId}`
-        },
-        () => {
-          fetchSeleniumAgents();
-        }
-      )
-      .subscribe();
+    // Polling keeps heartbeat status fresh without excessive websocket connections
+    const intervalId = window.setInterval(() => {
+      fetchSeleniumAgents();
+    }, 30000);
 
     return () => {
-      supabase.removeChannel(channel);
+      window.clearInterval(intervalId);
     };
   }, [projectId]);
 
