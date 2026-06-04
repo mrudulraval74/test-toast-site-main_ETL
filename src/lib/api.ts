@@ -15,8 +15,21 @@ export const ETL_API_BASE_URL = `${FUNCTIONS_BASE_URL}/etl-api`;
 // Point legacy AI chat to the new ETL function
 export const API_BASE_URL = ETL_API_BASE_URL;
 
+let authHeadersCache: { headers: Record<string, string>; token: string | null; expiresAt: number } | null = null;
+let authHeadersInFlight: Promise<Record<string, string>> | null = null;
+
 // Helper for authenticated Edge Function calls
 const getAuthHeaders = async () => {
+  const now = Date.now();
+  if (authHeadersCache && authHeadersCache.expiresAt > now) {
+    return authHeadersCache.headers;
+  }
+
+  if (authHeadersInFlight) {
+    return authHeadersInFlight;
+  }
+
+  authHeadersInFlight = (async () => {
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
 
@@ -24,11 +37,28 @@ const getAuthHeaders = async () => {
     console.warn("No active session found for API call");
   }
 
-  return {
+  const headers = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${token || "ANON_KEY"}`,
     // 'apikey': ... // Optional if Authorization is present, but some proxies check apikey
   };
+
+  const expiresAt = session?.expires_at
+    ? Math.max(now + 5000, (session.expires_at * 1000) - 60000)
+    : now + 30000;
+
+  authHeadersCache = {
+    headers,
+    token: token || null,
+    expiresAt,
+  };
+
+  return headers;
+  })().finally(() => {
+    authHeadersInFlight = null;
+  });
+
+  return authHeadersInFlight;
 };
 
 export const connectionsApi = {

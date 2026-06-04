@@ -1109,25 +1109,20 @@ export default function AIComparison() {
             // Fetch schemas
             let sourceSchemas: any[] = [];
             let targetSchema = null;
+            const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
+            const activeSources = multiSourceMode
+                ? sourceConnections.filter(conn => conn?.id)
+                : [sourceConnections[0]].filter(conn => conn?.id);
 
-            if (multiSourceMode) {
-                for (const conn of sourceConnections) {
-                    if (conn?.id) {
-                        const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                        const schema = await fetchDatabaseSchema(conn.id, selectedAgentId || undefined);
-                        if (schema) sourceSchemas.push(schema);
-                    }
-                }
-            } else if (sourceConnections[0]?.id) {
-                const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                const schema = await fetchDatabaseSchema(sourceConnections[0].id, selectedAgentId || undefined);
-                if (schema) sourceSchemas.push(schema);
-            }
+            const [nextSourceSchemas, nextTargetSchema] = await Promise.all([
+                Promise.all(activeSources.map(conn => fetchDatabaseSchema(conn.id, selectedAgentId || undefined))),
+                targetConnection?.id
+                    ? fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined)
+                    : Promise.resolve(null)
+            ]);
 
-            if (targetConnection?.id) {
-                const { fetchDatabaseSchema } = await import('@/utils/schemaFetcher');
-                targetSchema = await fetchDatabaseSchema(targetConnection.id, selectedAgentId || undefined);
-            }
+            sourceSchemas = nextSourceSchemas.filter(Boolean);
+            targetSchema = nextTargetSchema;
 
             const selectedSheets = sheets.filter(s => selectedSheetNames.includes(s.name));
             const sheetsForGeneration = selectedSheets.length > 0

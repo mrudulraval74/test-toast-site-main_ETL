@@ -23,9 +23,23 @@ export interface DatabaseSchema {
     totalColumns: number;
 }
 
-// Simple in-memory cache
+// Simple in-memory cache. Key by connection + agent so metadata from one agent
+// cannot be reused for another agent/tenant context.
 const schemaCache = new Map<string, { schema: DatabaseSchema; timestamp: number }>();
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const inFlightSchemaRequests = new Map<string, Promise<DatabaseSchema>>();
+const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
+
+function getSchemaCacheKey(connectionId: string, agentId?: string) {
+    return `${connectionId}::${agentId || 'default-agent'}`;
+}
+
+function parseNullableFlag(value: any): boolean {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) return false;
+    return ['yes', 'y', 'true', '1', 'nullable'].includes(normalized);
+}
 
 /**
  * Fetch database schema from backend API
@@ -33,14 +47,43 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 export async function fetchDatabaseSchema(
     connectionId: string, 
     agentId?: string,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; forceRefresh?: boolean }
 ): Promise<DatabaseSchema> {
+    const cacheKey = getSchemaCacheKey(connectionId, agentId);
+
     // Check cache first
-    const cached = schemaCache.get(connectionId);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    const cached = schemaCache.get(cacheKey);
+    if (!options?.forceRefresh && cached && Date.now() - cached.timestamp < CACHE_DURATION) {
         console.log('Using cached schema for connection', connectionId);
         return cached.schema;
     }
+
+    if (!options?.forceRefresh && !options?.signal) {
+        const inFlight = inFlightSchemaRequests.get(cacheKey);
+        if (inFlight) {
+            console.log('Using in-flight schema request for connection', connectionId);
+            return inFlight;
+        }
+    }
+
+    const requestPromise = fetchDatabaseSchemaUncached(connectionId, agentId, options)
+        .finally(() => {
+            inFlightSchemaRequests.delete(cacheKey);
+        });
+
+    if (!options?.forceRefresh && !options?.signal) {
+        inFlightSchemaRequests.set(cacheKey, requestPromise);
+    }
+
+    return requestPromise;
+}
+
+async function fetchDatabaseSchemaUncached(
+    connectionId: string,
+    agentId?: string,
+    options?: { signal?: AbortSignal; forceRefresh?: boolean }
+): Promise<DatabaseSchema> {
+    const cacheKey = getSchemaCacheKey(connectionId, agentId);
 
     try {
         console.log('Fetching schema for connection', connectionId);
@@ -106,17 +149,19 @@ export async function fetchDatabaseSchema(
         for (const db of metadata.databases) {
             for (const schemaItem of (db.schemas || [])) {
                 for (const table of (schemaItem.tables || [])) {
-                    const columns: ColumnInfo[] = (table.columns || []).map((col: any) => ({
-                        name: col.name || col.columnName || col.column_name || col.COLUMN_NAME || '',
-                        dataType: col.type || col.dataType || 'unknown',
-                        isNullable: Boolean(col.nullable ?? col.isNullable),
-                        maxLength: col.maxLength,
-                    }));
+                    const columns: ColumnInfo[] = (table.columns || [])
+                        .map((col: any) => ({
+                            name: col.name || col.columnName || col.column_name || col.COLUMN_NAME || '',
+                            dataType: col.type || col.dataType || col.data_type || 'unknown',
+                            isNullable: parseNullableFlag(col.nullable ?? col.isNullable ?? col.is_nullable ?? col.IS_NULLABLE),
+                            maxLength: col.maxLength ?? col.max_length,
+                        }))
+                        .filter((col: ColumnInfo) => !!col.name);
                     totalColumns += columns.length;
                     tables.push({
                         schema: schemaItem.name || 'dbo',
-                        tableName: table.name,
-                        fullName: `${schemaItem.name || 'dbo'}.${table.name}`,
+                        tableName: table.name || table.tableName || table.table_name || '',
+                        fullName: `${schemaItem.name || 'dbo'}.${table.name || table.tableName || table.table_name || ''}`,
                         columns,
                         primaryKey: (table.columns || [])
                             .filter((c: any) => c.isPrimaryKey)
@@ -133,7 +178,7 @@ export async function fetchDatabaseSchema(
         };
 
         // Cache the result
-        schemaCache.set(connectionId, {
+        schemaCache.set(cacheKey, {
             schema,
             timestamp: Date.now()
         });
@@ -219,8 +264,14 @@ export function findColumnInTable(table: TableInfo, columnName: string): ColumnI
  */
 export function clearSchemaCache(connectionId?: string) {
     if (connectionId) {
-        schemaCache.delete(connectionId);
+        for (const key of Array.from(schemaCache.keys())) {
+            if (key.startsWith(`${connectionId}::`)) schemaCache.delete(key);
+        }
+        for (const key of Array.from(inFlightSchemaRequests.keys())) {
+            if (key.startsWith(`${connectionId}::`)) inFlightSchemaRequests.delete(key);
+        }
     } else {
         schemaCache.clear();
+        inFlightSchemaRequests.clear();
     }
 }
