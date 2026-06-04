@@ -236,14 +236,14 @@ export function UploadValidationStep({
         'Target Table Name': m.targetTable || '',
         'Target Attribute Name': m.targetColumn || '',
         'Target Attribute DataType': m.targetDataType || '',
-        'Target Attribute DataSize': '',
+        'Target Attribute DataSize': m.targetDataSize || '',
         'Target Key': m.isPrimaryKey ? 'Y' : '',
         'Target IsNullable': m.isNullable === false ? 'N' : (m.isNullable === true ? 'Y' : ''),
 
         'Source Table Name': m.sourceTable || '',
         'Source Attribute Name': m.sourceColumn || '',
         'Source Attribute DataType': m.sourceDataType || '',
-        'Source Attribute DataSize': '',
+        'Source Attribute DataSize': m.sourceDataSize || '',
         'Source Key': m.isPrimaryKey ? 'Y' : '',
         'Source IsNullable': m.isNullable === false ? 'N' : (m.isNullable === true ? 'Y' : ''),
 

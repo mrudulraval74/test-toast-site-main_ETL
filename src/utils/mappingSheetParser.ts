@@ -8,6 +8,8 @@ export interface ColumnMapping {
     targetTable?: string;
     sourceDataType?: string;
     targetDataType?: string;
+    sourceDataSize?: string;
+    targetDataSize?: string;
     notes?: string;
     comments?: string;
     transformationType: 'direct_move' | 'lookup' | 'date_format' | 'trim' | 'null_handling' |
@@ -323,6 +325,20 @@ function parseStandardFormat(data: any[], columns: string[], verticalMetadata: a
         'target format', 'output type', 'target attribute datatype', 'tgt data type',
         'target_datatype', 'tgt_datatype',
     ]);
+    const srcDataSizeCol = findBestColumn([
+        'source data size', 'source datasize', 'source size', 'source length',
+        'src data size', 'src datasize', 'src size', 'src length',
+        'source attribute datasize', 'source attribute data size',
+        'source_attribute_datasize', 'source_attribute_data_size',
+        'source column size', 'source column length',
+    ]);
+    const tgtDataSizeCol = findBestColumn([
+        'target data size', 'target datasize', 'target size', 'target length',
+        'tgt data size', 'tgt datasize', 'tgt size', 'tgt length',
+        'target attribute datasize', 'target attribute data size',
+        'target_attribute_datasize', 'target_attribute_data_size',
+        'target column size', 'target column length',
+    ]);
     const pkCol = findBestColumn(['primary key', 'pk', 'key', 'is key', 'is_key', 'unique key', 'identifier', 'target key', 'source key']);
     const nullCol = findBestColumn(['is nullable', 'nullable', 'null', 'allow null', 'is_nullable', 'optional', 'target isnullable', 'source isnullable']);
     const notesCol = findBestColumn(['notes', 'note', 'comment', 'comments', 'remarks', 'description', 'business_notes', 'mapping_notes']);
@@ -396,6 +412,8 @@ function parseStandardFormat(data: any[], columns: string[], verticalMetadata: a
             transformationLogic: transformValue ? String(transformValue).trim() : undefined,
             sourceDataType: srcDataTypeCol ? cleanVal(row[srcDataTypeCol]) || undefined : undefined,
             targetDataType: tgtDataTypeCol ? cleanVal(row[tgtDataTypeCol]) || undefined : undefined,
+            sourceDataSize: srcDataSizeCol ? cleanVal(row[srcDataSizeCol]) || undefined : undefined,
+            targetDataSize: tgtDataSizeCol ? cleanVal(row[tgtDataSizeCol]) || undefined : undefined,
             notes: notesCol ? cleanVal(row[notesCol]) || undefined : undefined,
             complexity: assessComplexity(transformValue),
             isPrimaryKey: pkCol ? /y|yes|true|1|pk/i.test(String(row[pkCol] || '')) : undefined,
