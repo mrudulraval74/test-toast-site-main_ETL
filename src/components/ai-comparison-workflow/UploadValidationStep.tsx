@@ -133,8 +133,6 @@ export function UploadValidationStep({
     };
 
     const showSheetSelector = sheets.length > 1 && !!onSheetsSelectionChange;
-    const showAnalyzeButton = !!uploadedFile && !!onAnalyzeSelected;
-
     const selectedSheetsForDisplay = useMemo(() => {
         if (!sheets || sheets.length === 0) return [];
         if (!selectedSheetNames || selectedSheetNames.length === 0) return [];
@@ -144,6 +142,19 @@ export function UploadValidationStep({
     const selectedRowsForDisplay = useMemo(() => {
         return selectedSheetsForDisplay.reduce((sum, s) => sum + (s.data?.length || 0), 0);
     }, [selectedSheetsForDisplay]);
+
+    const selectedSheetSummary = useMemo(() => {
+        if (selectedSheetNames.length === 0) return "None";
+        const visibleNames = selectedSheetNames.slice(0, 3);
+        const hiddenCount = selectedSheetNames.length - visibleNames.length;
+        return hiddenCount > 0
+            ? `${visibleNames.join(", ")} +${hiddenCount} more`
+            : visibleNames.join(", ");
+    }, [selectedSheetNames]);
+
+    const selectedSheetTitle = selectedSheetNames.length > 0
+        ? selectedSheetNames.join(", ")
+        : "None";
 
     const [showConvertDialog, setShowConvertDialog] = useState(false);
     const [convertFileName, setConvertFileName] = useState<string>('');
@@ -822,7 +833,7 @@ export function UploadValidationStep({
                                             </div>
                                             <div className="space-y-0.5 min-w-0">
                                                 <p className="truncate text-sm font-medium text-foreground">{uploadedFile.name}</p>
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex flex-wrap items-center gap-1.5">
                                                     {showSheetSelector ? (
                                                         <>
                                                             <Badge variant="secondary" className="h-4 px-1 text-[10px] bg-primary/10 text-primary border-none">
@@ -890,12 +901,13 @@ export function UploadValidationStep({
                                                 </div>
                                             </div>
 
-                                            <div className="text-xs text-muted-foreground">
-                                                Selected:{" "}
-                                                <span className="text-foreground">
-                                                    {selectedSheetNames.length > 0
-                                                        ? selectedSheetNames.join(", ")
-                                                        : "None"}
+                                            <div className="flex items-start gap-1.5 rounded-md border bg-muted/10 px-2.5 py-2 text-xs">
+                                                <span className="shrink-0 text-muted-foreground">Selected:</span>
+                                                <span
+                                                    className="min-w-0 flex-1 truncate font-medium text-foreground"
+                                                    title={selectedSheetTitle}
+                                                >
+                                                    {selectedSheetSummary}
                                                 </span>
                                             </div>
 
@@ -926,21 +938,6 @@ export function UploadValidationStep({
                                         </div>
                                     )}
 
-                                    {showAnalyzeButton && (
-                                        <Button
-                                            className="w-full"
-                                            size="sm"
-                                            onClick={onAnalyzeSelected}
-                                            disabled={isAnalyzing}
-                                        >
-                                            {isAnalyzing ? (
-                                                <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Processing...</>
-                                            ) : (
-                                                `Analyze ${selectedSheetNames.length} Selected Sheet${selectedSheetNames.length !== 1 ? 's' : ''}`
-                                            )}
-                                        </Button>
-                                    )}
-
                                     {!!uploadedFile && (
                                         <Button
                                             className="w-full"
@@ -949,7 +946,9 @@ export function UploadValidationStep({
                                             onClick={() => onValidate()}
                                             disabled={isValidating || isAnalyzing}
                                         >
-                                            {isValidating ? (
+                                            {isAnalyzing ? (
+                                                <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Preparing mappings...</>
+                                            ) : isValidating ? (
                                                 <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Validating...</>
                                             ) : (
                                                 "Validate Structure"
@@ -966,14 +965,6 @@ export function UploadValidationStep({
                                         </Alert>
                                     )}
 
-                                    {(isAnalyzing || isValidating) && (
-                                        <Alert>
-                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                            <AlertDescription>
-                                                {isAnalyzing ? "Parsing mapping structure..." : "Validating against database..."}
-                                            </AlertDescription>
-                                        </Alert>
-                                    )}
                                 </div>
                             ) : (
                                 <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -1002,27 +993,8 @@ export function UploadValidationStep({
                             <ShieldCheck className="mb-3 h-12 w-12 opacity-30" />
                             <h3 className="text-base font-semibold text-foreground">Validation Results</h3>
                             <p className="text-sm text-muted-foreground text-center max-w-xs mt-2">
-                                Upload a file and analyze to see validation insights here.
+                                Upload a file and validate structure to see database checks here.
                             </p>
-                            <div className="mt-4 w-full max-w-xs">
-                                <Button
-                                    className="w-full"
-                                    variant="outline"
-                                    onClick={() => onValidate()}
-                                    disabled={isValidating || isAnalyzing}
-                                >
-                                    {isValidating ? (
-                                        <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Validating...</>
-                                    ) : (
-                                        "Validate Structure"
-                                    )}
-                                </Button>
-                                {!analysis?.mappings && (
-                                    <p className="mt-2 text-center text-xs text-muted-foreground">
-                                        Run Analyze first to enable validation.
-                                    </p>
-                                )}
-                            </div>
                         </div>
                     ) : (
                         <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -1060,7 +1032,7 @@ export function UploadValidationStep({
                                         </div>
 
                                         {!validationResults.success && analysis?.mappings && (
-                                            <div className="mt-6 pt-6 border-t border-red-200/50 flex items-center gap-2 text-sm text-red-700 bg-red-100/50 px-3 py-1.5 rounded-full font-medium w-fit">
+                                            <div className="mt-5 flex w-full items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                                                 <AlertCircle className="h-4 w-4" />
                                                 Missing objects detected
                                             </div>

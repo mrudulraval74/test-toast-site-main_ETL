@@ -107,7 +107,7 @@ export async function fetchDatabaseSchema(
             for (const schemaItem of (db.schemas || [])) {
                 for (const table of (schemaItem.tables || [])) {
                     const columns: ColumnInfo[] = (table.columns || []).map((col: any) => ({
-                        name: col.name,
+                        name: col.name || col.columnName || col.column_name || col.COLUMN_NAME || '',
                         dataType: col.type || col.dataType || 'unknown',
                         isNullable: Boolean(col.nullable ?? col.isNullable),
                         maxLength: col.maxLength,
@@ -120,7 +120,7 @@ export async function fetchDatabaseSchema(
                         columns,
                         primaryKey: (table.columns || [])
                             .filter((c: any) => c.isPrimaryKey)
-                            .map((c: any) => c.name),
+                            .map((c: any) => c.name || c.columnName || c.column_name || c.COLUMN_NAME || ''),
                     });
                 }
             }

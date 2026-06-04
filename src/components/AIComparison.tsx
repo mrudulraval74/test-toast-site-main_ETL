@@ -686,6 +686,8 @@ export default function AIComparison() {
             setIsValidating(true);
             const startTime = Date.now();
 
+            const { findColumnInTable, findTableInSchema } = await import('@/utils/schemaFetcher');
+
             const results = {
                 sourceErrors: [] as string[],
                 targetErrors: [] as string[],
@@ -727,27 +729,7 @@ export default function AIComparison() {
                 }
             }
 
-            const findTable = (schemaData: any, tableName: string) => {
-                if (!schemaData || !Array.isArray(schemaData.tables)) return null;
-                const cleanName = tableName.replace(/[\[\]]/g, '');
-                const parts = cleanName.split('.');
-                const tableBase = parts.length > 1 ? parts[1] : parts[0];
-                const schemaBase = parts.length > 1 ? parts[0] : null;
-
-                for (const table of (schemaData.tables as any[])) {
-                    const schemaName = (table.schema || '').toLowerCase();
-                    const tableNameLower = (table.tableName || table.name || '').toLowerCase();
-                    if (tableNameLower === tableBase.toLowerCase()) {
-                        if (!schemaBase || schemaName === schemaBase.toLowerCase()) {
-                            return {
-                                name: table.tableName || table.name,
-                                columns: table.columns || [],
-                            };
-                        }
-                    }
-                }
-                return null;
-            };
+            const findTable = (schemaData: any, tableName: string) => findTableInSchema(schemaData, tableName);
 
             const processedSourceTables = new Set<string>();
             const processedTargetTables = new Set<string>();
@@ -783,7 +765,7 @@ export default function AIComparison() {
                         if (table) {
                             tableFound = true;
                             stats.tableFound = true;
-                            const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.sourceColumn.toLowerCase());
+                            const col = findColumnInTable(table, mapping.sourceColumn);
                             if (col) stats.found.add(mapping.sourceColumn);
                             break;
                         }
@@ -827,8 +809,8 @@ export default function AIComparison() {
                         }
                     } else {
                         stats.tableFound = true;
-                        const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.targetColumn.toLowerCase());
-                        if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.name}'.`);
+                        const col = findColumnInTable(table, mapping.targetColumn);
+                        if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.tableName || table.name}'.`);
                         else stats.found.add(mapping.targetColumn);
                     }
                 } else if (targetSchema) {
@@ -1088,17 +1070,19 @@ export default function AIComparison() {
             const analysisWithPlaceholders = replaceTablePlaceholders(preliminaryAnalysis as any, sourceConnections[0], targetConnection);
             setAnalysis(analysisWithPlaceholders);
 
-            toast({ title: "Analysis Ready", description: "Review the mappings, then click Validate Structure when you're ready." });
+            toast({ title: "Mappings Prepared", description: "Mapping details are ready for structure validation." });
+            return analysisWithPlaceholders;
 
         } catch (error) {
             console.error('Analysis error:', error);
             if (error instanceof Error && error.message === "INVALID_LAYOUT") {
                 setIsAnalyzing(false);
-                return;
+                return null;
             }
             // Fallback? Hard to do fallback for multiple sheets without complex logic. 
             // Just show error for now.
             toast({ title: "Analysis Failed", description: "Could not analyze selected sheets.", variant: "destructive" });
+            return null;
         } finally {
             setIsAnalyzing(false);
         }
@@ -2067,11 +2051,35 @@ export default function AIComparison() {
 
 
     const handleValidateStructure = async (directMappings?: any[]) => {
-        const mappingsToValidate = Array.isArray(directMappings)
-            ? directMappings
-            : Array.isArray(analysis?.mappings)
-                ? analysis.mappings
-                : [];
+        let mappingsToValidate = Array.isArray(directMappings) ? directMappings : [];
+
+        if (mappingsToValidate.length === 0 && sheets.length > 0) {
+            const selectedSheets = sheets.filter(s => selectedSheetNames.includes(s.name));
+            const sheetsToPrepare = selectedSheets.length > 0
+                ? selectedSheets
+                : (uploadedFile?.data ? [{ name: uploadedFile.name, data: uploadedFile.data }] : []);
+
+            if (sheetsToPrepare.length === 0) {
+                toast({ title: "No Mapping File", description: "Upload or convert a mapping sheet before validating.", variant: "destructive" });
+                return;
+            }
+
+            const preparedAnalysis = await analyzeMapping(sheetsToPrepare, { forceQaStandard: isSheetInQAStandardFormat });
+            mappingsToValidate = Array.isArray(preparedAnalysis?.mappings)
+                ? preparedAnalysis.mappings
+                : Array.isArray(analysisRef.current?.mappings)
+                    ? analysisRef.current.mappings
+                    : [];
+
+            if (mappingsToValidate.length === 0) {
+                toast({ title: "No Mappings Found", description: "Cannot validate structure without mapping details.", variant: "destructive" });
+                return;
+            }
+        }
+
+        if (mappingsToValidate.length === 0) {
+            mappingsToValidate = Array.isArray(analysis?.mappings) ? analysis.mappings : [];
+        }
 
         if (mappingsToValidate.length === 0) {
             toast({ title: "No Mappings Found", description: "Cannot validate structure without mapping details.", variant: "destructive" });
@@ -2102,6 +2110,7 @@ export default function AIComparison() {
         setValidationResults(null);
 
         try {
+            const { findColumnInTable, findTableInSchema } = await import('@/utils/schemaFetcher');
             const results = {
                 sourceErrors: [] as string[],
                 targetErrors: [] as string[],
@@ -2149,27 +2158,7 @@ export default function AIComparison() {
                 results.warnings.push('No target connection selected - skipping target validation');
             }
 
-            const findTable = (schemaData: any, tableName: string) => {
-                if (!schemaData || !Array.isArray(schemaData.tables)) return null;
-                const cleanName = tableName.replace(/[\[\]]/g, '');
-                const parts = cleanName.split('.');
-                const tableBase = parts.length > 1 ? parts[1] : parts[0];
-                const schemaBase = parts.length > 1 ? parts[0] : null;
-
-                for (const table of (schemaData.tables as any[])) {
-                    const schemaName = (table.schema || '').toLowerCase();
-                    const tableNameLower = (table.tableName || table.name || '').toLowerCase();
-                    if (tableNameLower === tableBase.toLowerCase()) {
-                        if (!schemaBase || schemaName === schemaBase.toLowerCase()) {
-                            return {
-                                name: table.tableName || table.name,
-                                columns: table.columns || [],
-                            };
-                        }
-                    }
-                }
-                return null;
-            };
+            const findTable = (schemaData: any, tableName: string) => findTableInSchema(schemaData, tableName);
 
             const processedSourceTables = new Set<string>();
             const processedTargetTables = new Set<string>();
@@ -2206,7 +2195,7 @@ export default function AIComparison() {
                         if (table) {
                             tableFound = true;
                             stats.tableFound = true;
-                            const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.sourceColumn.toLowerCase());
+                            const col = findColumnInTable(table, mapping.sourceColumn);
                             if (col) stats.found.add(mapping.sourceColumn);
                             break;
                         }
@@ -2251,8 +2240,8 @@ export default function AIComparison() {
                         }
                     } else {
                         stats.tableFound = true;
-                        const col = table.columns.find((c: any) => c.name.toLowerCase() === mapping.targetColumn.toLowerCase());
-                        if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.name}'.`);
+                        const col = findColumnInTable(table, mapping.targetColumn);
+                        if (!col) results.targetErrors.push(`Column '${mapping.targetColumn}' not found in '${table.tableName || table.name}'.`);
                         else stats.found.add(mapping.targetColumn);
                     }
                 } else if (targetSchema) {
@@ -2284,7 +2273,6 @@ export default function AIComparison() {
             console.log('⚠️ Warnings:', results.warnings);
 
             setValidationResults(results);
-            setShowValidationDialog(true);
 
             // Show toast with results
             if (results.stats.totalTables === 0 && results.stats.totalColumns === 0) {
