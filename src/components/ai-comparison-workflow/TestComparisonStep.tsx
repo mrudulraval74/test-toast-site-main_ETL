@@ -219,8 +219,9 @@ export function TestComparisonStep({
     }, [searchTerm, testCases.length]);
 
     useEffect(() => {
-        setExpandedTests((prev) => prev.filter((idx) => idx < testCases.length));
-    }, [testCases.length]);
+        setSelectedTests([]);
+        setExpandedTests([]);
+    }, [analysis]);
 
     useEffect(() => {
         if (!currentExecutingTestName) return;
@@ -759,10 +760,12 @@ export function TestComparisonStep({
                                         <span className="text-xs font-semibold text-muted-foreground uppercase flex items-center gap-1 mb-1">
                                             <FileCode className="h-3 w-3" /> Actual Result
                                         </span>
-                                        <div className="flex items-center justify-between gap-2">
-                                            <p className={`flex-1 whitespace-pre-wrap text-xs ${tc.lastRunResult ? 'font-medium text-foreground' : 'italic text-muted-foreground'}`}>
-                                                {tc.lastRunResult ? tc.lastRunResult.message : 'Not executed yet'}
-                                            </p>
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="flex-1 max-h-[150px] overflow-y-auto pr-2">
+                                                <p className={`whitespace-pre-wrap text-xs ${tc.lastRunResult ? 'font-medium text-foreground' : 'italic text-muted-foreground'}`}>
+                                                    {tc.lastRunResult ? tc.lastRunResult.message : 'Not executed yet'}
+                                                </p>
+                                            </div>
                                             {tc.lastRunResult?.details && (
                                                 <Button
                                                     size="sm"

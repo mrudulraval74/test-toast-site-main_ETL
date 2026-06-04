@@ -215,9 +215,8 @@ export function UploadValidationStep({
                     }
 
                     setConvertSheets(loadedSheets);
-                    // Do not auto-convert on upload. Ask the user which sheet(s) to process.
-                    // For single-sheet workbooks, preselect the only sheet.
-                    setConvertSelectedSheetNames(loadedSheets.length === 1 ? [loadedSheets[0].name] : []);
+                    // Preselect all sheets by default for convenience.
+                    setConvertSelectedSheetNames(loadedSheets.map((s) => s.name));
                 } catch (err) {
                     console.error('Failed reading workbook:', err);
                     setConvertError("Could not read the uploaded file.");
@@ -578,7 +577,7 @@ export function UploadValidationStep({
                                 </Label>
                             </div>
 
-                            <div className="space-y-3">
+                            <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                                 {(multiSourceMode ? sourceConnections : [sourceConnections[0]]).map((conn, idx) => (
                                     <div key={idx} className="group relative flex gap-3 rounded-lg border bg-background p-3 transition-colors hover:border-primary/30">
                                         <div className="flex-1 space-y-2">
@@ -1061,31 +1060,9 @@ export function UploadValidationStep({
                                         </div>
 
                                         {!validationResults.success && analysis?.mappings && (
-                                            <div className="mt-6 pt-6 border-t border-red-200/50 flex flex-col md:flex-row items-center justify-between gap-4">
-                                                <div className="flex items-center gap-2 text-sm text-red-700 bg-red-100/50 px-3 py-1.5 rounded-full font-medium">
-                                                    <AlertCircle className="h-4 w-4" />
-                                                    Missing objects detected
-                                                </div>
-                                                <Button size="sm" className="gap-2 h-10 px-6 rounded-xl shadow-md transition-all hover:scale-[1.02]" variant="default" onClick={() => {
-                                                    import('xlsx').then(XLSX => {
-                                                        const exportData = analysis.mappings.map((m: any) => ({
-                                                            'Source Table': m.sourceTable,
-                                                            'Source Column': m.sourceColumn,
-                                                            'Target Table': m.targetTable,
-                                                            'Target Column': m.targetColumn,
-                                                            'Transformation Logic': m.transformationLogic || (m.transformationType === 'direct_move' ? 'Direct' : '')
-                                                        }));
-
-                                                        const wb = XLSX.utils.book_new();
-                                                        const ws = XLSX.utils.json_to_sheet(exportData);
-                                                        const wscols = Object.keys(exportData[0] || {}).map(k => ({ wch: 20 }));
-                                                        ws['!cols'] = wscols;
-                                                        XLSX.utils.book_append_sheet(wb, ws, 'Standardized Mapping');
-                                                        XLSX.writeFile(wb, `Cleaned_Mapping_${new Date().toISOString().slice(0, 10)}.xlsx`);
-                                                    });
-                                                }} disabled={!analysis?.mappings}>
-                                                    <FileSpreadsheet className="h-4 w-4" /> Download Standardized Sheet
-                                                </Button>
+                                            <div className="mt-6 pt-6 border-t border-red-200/50 flex items-center gap-2 text-sm text-red-700 bg-red-100/50 px-3 py-1.5 rounded-full font-medium w-fit">
+                                                <AlertCircle className="h-4 w-4" />
+                                                Missing objects detected
                                             </div>
                                         )}
                                     </div>
@@ -1277,7 +1254,7 @@ export function UploadValidationStep({
 
                                 <Card className="flex flex-1 min-h-0 flex-col border-border shadow-sm">
                                     <CardHeader className="border-b bg-muted/10 px-4 py-3">
-                                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                                        <div className="flex flex-col gap-3">
                                             <div className="space-y-0.5">
                                                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
                                                     <Layers className="h-4 w-4 text-muted-foreground" />
@@ -1289,7 +1266,7 @@ export function UploadValidationStep({
                                                         : "Upload a file to list sheets"}
                                                 </CardDescription>
                                             </div>
-                                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                            <div className="flex flex-wrap items-center gap-2">
                                                 <Button
                                                     className="h-7 text-xs px-3"
                                                     onClick={handleGenerateConvertedPreview}
@@ -1325,18 +1302,17 @@ export function UploadValidationStep({
                                             </div>
                                         </div>
                                     </CardHeader>
-                                    <CardContent className="flex-1 min-h-0 pt-3">
-                                        <ScrollArea className="h-full w-full">
-                                            <div className="space-y-2 pr-3">
+                                    <CardContent className="flex-1 min-h-[200px] max-h-[300px] overflow-y-auto p-4 pt-3">
+                                        <div className="space-y-2">
                                                 {convertSheets.length === 0 ? (
                                                     <div className="rounded-md border bg-muted/10 p-3 text-sm text-muted-foreground">
                                                         Upload a mapping sheet to see available tabs/sheets here.
                                                     </div>
                                                 ) : (
-                                                    convertSheets.map((sheet) => (
+                                                    convertSheets.map((sheet, idx) => (
                                                         <div key={sheet.name} className="flex items-center gap-2 rounded-md border bg-background px-2.5 py-2">
                                                             <Checkbox
-                                                                id={`convert-sheet-${sheet.name}`}
+                                                                id={`convert-sheet-${idx}`}
                                                                 checked={convertSelectedSheetNames.includes(sheet.name)}
                                                                 onCheckedChange={(checked) => {
                                                                     clearConvertedPreview();
@@ -1348,7 +1324,7 @@ export function UploadValidationStep({
                                                                 }}
                                                             />
                                                             <label
-                                                                htmlFor={`convert-sheet-${sheet.name}`}
+                                                                htmlFor={`convert-sheet-${idx}`}
                                                                 className="text-sm font-medium leading-none cursor-pointer flex-1 min-w-0 truncate"
                                                                 title={sheet.name}
                                                             >
@@ -1375,7 +1351,6 @@ export function UploadValidationStep({
                                                     </Alert>
                                                 )}
                                             </div>
-                                        </ScrollArea>
                                     </CardContent>
                                 </Card>
                             </div>

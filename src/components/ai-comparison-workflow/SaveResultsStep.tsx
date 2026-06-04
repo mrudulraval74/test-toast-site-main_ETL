@@ -260,7 +260,7 @@ export function SaveResultsStep({
                         <CardDescription>Results organized by category</CardDescription>
                     </CardHeader>
                     <CardContent>
-                        <div className="space-y-2">
+                        <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                             {['structure', 'direct_move', 'business_rule', 'transformation', 'general'].map(category => {
                                 const categoryTests = testCases.filter(tc => (tc.category || 'general') === category);
                                 const categoryPassed = categoryTests.filter(tc => tc.lastRunResult?.status === 'pass').length;
